@@ -1,0 +1,25 @@
+# Security-Ops API — runtime dependencies (Python 3.12).
+#
+# Pinned; every entry ships a cp312 manylinux wheel so python:3.12-slim needs no
+# compiler (see Dockerfile). Only what the backend actually imports + the ASGI
+# server and the async Postgres driver named in the SQLAlchemy URL.
+
+# --- Web framework / ASGI server -------------------------------------------
+fastapi==0.115.6            # app.main, app.auth.sso, app.api.* (pulls a compatible starlette)
+uvicorn[standard]==0.34.0   # ASGI server: `uvicorn app.main:app` (Dockerfile CMD, scripts/dev.sh)
+
+# --- Database (async SQLAlchemy + asyncpg + Alembic) -----------------------
+SQLAlchemy[asyncio]==2.0.36 # ORM/core 2.0 async (pulls greenlet); app.db.*, app.models.*
+asyncpg==0.30.0             # async PostgreSQL driver for postgresql+asyncpg:// URLs
+greenlet==3.1.1             # required by SQLAlchemy's async bridge (explicit for clarity)
+alembic==1.14.0             # migrations (migrations/env.py, `alembic upgrade head`)
+
+# --- Settings / validation (Pydantic v2) -----------------------------------
+pydantic==2.10.4            # app.core.config, schemas, DTOs
+pydantic-settings==2.7.0    # app.core.config Settings (SECOPS_ env prefix, .env)
+
+# --- Auth (Keycloak OIDC JWT validation) -----------------------------------
+PyJWT[crypto]==2.10.1       # app.auth.sso: jwt + RSAAlgorithm.from_jwk (needs cryptography)
+
+# --- HTTP client ------------------------------------------------------------
+httpx==0.28.1               # app.auth.sso JWKS fetch; app.engine.brigade_handoff

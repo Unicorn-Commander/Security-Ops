@@ -1,0 +1,82 @@
+name: secops
+
+# Security-Ops — ISOLATED stack (spec §3): own container, own Postgres, own
+# network, own credentials, own audit log. It NEVER shares a process / DB /
+# network with Brigade or with customer data — that isolation is the posture.
+#
+# Ports (host -> container):
+#   secops-api        8130 -> 8130   FastAPI / uvicorn app.main:app
+#   secops-db         5436 -> 5432   Postgres 16 (named volume secops-pgdata)
+#   secops-frontend   8131 -> 8131   nginx: SPA + /api proxy -> secops-api:8130
+
+services:
+  secops-db:
+    image: postgres:16
+    container_name: secops-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-secops}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-secops}
+      POSTGRES_DB: ${POSTGRES_DB:-secops}
+    volumes:
+      - secops-pgdata:/var/lib/postgresql/data
+    ports:
+      - "5436:5432"
+    networks:
+      - secops-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-secops} -d ${POSTGRES_DB:-secops}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  secops-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: secops-api:local
+    container_name: secops-api
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # In-network DB host. This overrides the .env value (which targets
+      # localhost:5436 for host/venv runs); `environment` wins over `env_file`.
+      SECOPS_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-secops}:${POSTGRES_PASSWORD:-secops}@secops-db:5432/${POSTGRES_DB:-secops}
+    depends_on:
+      secops-db:
+        condition: service_healthy
+    ports:
+      - "8130:8130"
+    networks:
+      - secops-net
+    # --- Phase 2 (Strix runner) ---------------------------------------------
+    # The engine subprocess-launches sandbox containers
+    # (${SECOPS_STRIX_SANDBOX_IMAGE}) and writes reports under
+    # ${SECOPS_RUNS_DIR}/<run>/. Enable persistence + the Docker socket then:
+    # volumes:
+    #   - ./strix_runs:/app/strix_runs
+    #   - /var/run/docker.sock:/var/run/docker.sock
+
+  secops-frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    image: secops-frontend:local
+    container_name: secops-frontend
+    restart: unless-stopped
+    depends_on:
+      - secops-api
+    ports:
+      - "8131:8131"
+    networks:
+      - secops-net
+
+volumes:
+  secops-pgdata:
+    name: secops-pgdata
+
+networks:
+  secops-net:
+    name: secops-net
+    driver: bridge

@@ -1,0 +1,21 @@
+{
+  "name": "security-ops-frontend",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Security-Ops console — engagements, authorized-target registry + attestation, run/findings view.",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview --port 5173"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.26.2"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.2",
+    "vite": "^5.4.8"
+  }
+}
