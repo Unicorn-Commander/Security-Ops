@@ -25,9 +25,17 @@ from app.db.session import get_session
 
 logger = logging.getLogger("secops.auth.entitlement")
 
-# Canonical product SKU. Kept in lock-step with configuration; defaults to
-# ``security-ops``.
-SECURITY_OPS_SKU: str = settings.entitlement_sku
+# Canonical product SKU. This literal matches ``Settings.entitlement_sku``'s
+# default and is used as a function default (evaluated at import), so it must NOT
+# read settings eagerly. The runtime-configured value is resolved lazily via
+# :func:`_default_sku` inside the dependency, so a ``SECOPS_ENTITLEMENT_SKU``
+# override is still honored.
+SECURITY_OPS_SKU: str = "security-ops"
+
+
+def _default_sku() -> str:
+    """The configured entitlement SKU (resolved lazily, honors env override)."""
+    return settings.entitlement_sku or SECURITY_OPS_SKU
 
 
 class EntitlementDenied(ForbiddenError):
@@ -100,27 +108,33 @@ async def _record_entitlement_denied(
 
 
 def require_entitlement(
-    sku: str = SECURITY_OPS_SKU,
+    sku: str | None = None,
 ) -> Callable[..., Awaitable[AuthUser]]:
     """FastAPI dependency FACTORY gating a route on the given entitlement SKU.
 
-    The returned dependency depends on :func:`get_current_user` (SSO) and the DB
-    session; on denial it records an ``ENTITLEMENT_DENIED`` audit event, then
-    raises :class:`EntitlementDenied` (HTTP 403). Usage::
+    ``sku`` defaults to the runtime-configured entitlement (``settings.entitlement_sku``,
+    resolved lazily so an env override is honored). The returned dependency depends
+    on :func:`get_current_user` (SSO) and the DB session; on denial it records an
+    ``ENTITLEMENT_DENIED`` audit event, then raises :class:`EntitlementDenied`
+    (HTTP 403). Usage::
 
         EntitledUser = Annotated[AuthUser, Depends(require_entitlement())]
+
+    The SKU is resolved lazily *inside* the returned dependency (not at factory
+    call time), so building ``EntitledUser`` at import never touches settings.
     """
 
     async def _require_entitlement(
         user: AuthUser = Depends(get_current_user),
         session: AsyncSession = Depends(get_session),
     ) -> AuthUser:
-        if has_entitlement(user, sku):
+        required = sku or _default_sku()
+        if has_entitlement(user, required):
             return user
-        await _record_entitlement_denied(session, user, sku)
+        await _record_entitlement_denied(session, user, required)
         raise EntitlementDenied(
-            f"entitlement required: {sku}",
-            detail={"required_sku": sku, "user_apps": list(user.apps)},
+            f"entitlement required: {required}",
+            detail={"required_sku": required, "user_apps": list(user.apps)},
         )
 
     return _require_entitlement

@@ -144,6 +144,46 @@ at runtime from `settings.database_url` by `migrations/env.py`. The API containe
 auto-applies migrations on start — run manually with `make migrate`
 (`alembic upgrade head`).
 
+- `0001_initial` — the org / target / engagement / run / finding / audit schema.
+- `0002_org_rls` — org-level row-level security (below). PostgreSQL-only; a clean
+  no-op on the sqlite unit-test DB.
+
+---
+
+## Row-level security — multi-tenant isolation (spec §5)
+
+A pentest product must never leak findings across tenants, so isolation is enforced
+in **two independent layers**:
+
+1. **App layer** — every business route resolves `CurrentOrg` and the repositories
+   compare/filter `org_id`; a cross-org id renders as 404.
+2. **Database layer** (`0002_org_rls` + `app/db/rls.py`) — Postgres RLS policies on
+   `authorized_targets`, `engagements`, `runs`, `findings`, `audit_events`, keyed on
+   the session GUC `app.current_org_id`. `get_current_org` binds that GUC once per
+   request (`set_org_context`); the detached Strix worker binds it from the run's
+   `org_id`; `get_session` clears it on teardown so a pooled connection never leaks
+   context. **Fail-closed:** with no GUC the predicate `org_id = NULL` is never true,
+   so zero rows are visible or writable. `organizations` is intentionally unpoliced
+   (the slug lookup bootstraps the GUC); `audit_events` allows NULL-`org_id` system
+   rows to be appended but still restricts *reads* to the caller's org.
+
+> **⚠️ GA activation step — the runtime DB role must NOT be a superuser or hold
+> `BYPASSRLS`.** RLS (even `FORCE`d) is bypassed by superusers, and the stock
+> `postgres` image makes `POSTGRES_USER` (`secops`) a superuser — so the policies
+> ship **safely and non-breakingly** but do not yet *enforce* until the app connects
+> as a dedicated non-superuser role. Before multi-tenant GA, create one and point
+> `SECOPS_DATABASE_URL` at it, e.g.:
+>
+> ```sql
+> CREATE ROLE secops_app LOGIN PASSWORD '…' NOSUPERUSER NOBYPASSRLS;
+> GRANT secops TO secops_app;            -- inherit table ownership/grants
+> ```
+>
+> The RLS isolation itself is proven by `tests/test_rls_postgres.py` (skips without
+> a `SECOPS_TEST_DATABASE_URL` Postgres, which must use a non-`BYPASSRLS` role); the
+> full app-path validation against a live non-superuser Postgres is the remaining
+> GA gate.
+
 ---
 
 ## Make targets

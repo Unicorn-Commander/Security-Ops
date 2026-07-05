@@ -55,6 +55,35 @@ class FindingRepository:
         )
         return items, int(total or 0)
 
+    async def list_for_engagement(
+        self,
+        engagement_id: uuid.UUID,
+        *,
+        limit: int = 500,
+        offset: int = 0,
+    ) -> tuple[list[Finding], int]:
+        """Return ``(items, total)`` for one engagement's findings, newest first.
+
+        Aggregates findings across all of the engagement's runs (the denormalized
+        ``engagement_id`` on each finding makes this a single-table query — no join).
+        Tenant isolation (``org_id`` check) is the caller's job, as elsewhere; the
+        report service loads the engagement tenant-checked first. The default limit
+        is deliberately high (report scope, not a paged UI list)."""
+        stmt = (
+            select(Finding)
+            .where(Finding.engagement_id == engagement_id)
+            .order_by(Finding.created_at.desc(), Finding.id.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+        items = list((await self.session.execute(stmt)).scalars().all())
+        total = await self.session.scalar(
+            select(func.count())
+            .select_from(Finding)
+            .where(Finding.engagement_id == engagement_id)
+        )
+        return items, int(total or 0)
+
     async def create(
         self,
         *,

@@ -18,13 +18,14 @@ happens only on run creation (see ``app.api.runs``).
 """
 
 import uuid
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Query, status
+from fastapi.responses import PlainTextResponse
 
 from app.api.deps import CurrentOrg, DbSession, EntitledUser
 from app.authz.gate import check_scope
-from app.core.errors import AppError, NotFoundError
+from app.core.errors import NotFoundError
 from app.repositories.engagements import EngagementRepository
 from app.schemas.common import Page
 from app.schemas.engagement import (
@@ -38,6 +39,7 @@ from app.services.engagements import (
     create_engagement,
     emergency_stop,
 )
+from app.services.reports import generate_engagement_report
 
 router = APIRouter(tags=["engagements"])
 
@@ -138,19 +140,25 @@ async def scope_check_route(
     return ScopeDecisionRead.model_validate(decision)
 
 
-@router.get(
-    "/engagements/{engagement_id}/report",
-    status_code=status.HTTP_501_NOT_IMPLEMENTED,
-)
+@router.get("/engagements/{engagement_id}/report")
 async def engagement_report_route(
     engagement_id: uuid.UUID,
     session: DbSession,
     org: CurrentOrg,
+    format: Annotated[Literal["markdown", "json"], Query()] = "markdown",
 ):
-    """Engagement report export — implemented in Phase 2 (Strix runner)."""
-    await _load_engagement(session, engagement_id, org)
-    raise AppError(
-        "Engagement report export lands in Phase 2.",
-        code="not_implemented",
-        status_code=status.HTTP_501_NOT_IMPLEMENTED,
-    )
+    """Export the branded engagement report (spec §8).
+
+    Tenant-checked via ``_load_engagement`` (cross-org == 404). ``format=markdown``
+    (default) returns the Markdown as ``text/markdown``; ``format=json`` returns
+    ``{"engagement_id", "report_markdown"}`` for programmatic callers. The report is
+    read-only — no run/finding rows are mutated.
+    """
+    engagement = await _load_engagement(session, engagement_id, org)
+    report_markdown = await generate_engagement_report(session, engagement=engagement)
+    if format == "json":
+        return {
+            "engagement_id": str(engagement.id),
+            "report_markdown": report_markdown,
+        }
+    return PlainTextResponse(report_markdown, media_type="text/markdown")

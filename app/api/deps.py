@@ -39,6 +39,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth.sso import AuthUser
 from app.auth.entitlement import require_entitlement
 from app.core.errors import ForbiddenError
+from app.db.rls import set_org_context
 from app.db.session import get_session
 from app.models.organization import Organization
 
@@ -77,6 +78,17 @@ async def get_current_org(user: EntitledUser, session: DbSession) -> Organizatio
 
     * ``no_organization``     — the principal carries no ``org_slug``.
     * ``org_not_provisioned`` — the slug has no matching org row in this database.
+
+    RLS: once the org is resolved, this dependency calls
+    :func:`app.db.rls.set_org_context` to bind the request's DB session to the
+    tenant via the ``app.current_org_id`` GUC — every subsequent query in the
+    request is then server-side-filtered by the Postgres ``org_isolation``
+    policies (migration ``0002_org_rls``). The ``organizations`` slug lookup
+    above deliberately runs BEFORE the GUC is set (and ``organizations``
+    carries no policy) — the org id isn't known until that query returns. The
+    context is session-level so it survives intra-request commits, and is reset
+    on request teardown by :func:`app.db.session.get_session`. On sqlite (unit
+    tests) the call is a no-op.
     """
     slug = (user.org_slug or "").strip()
     if not slug:
@@ -95,11 +107,17 @@ async def get_current_org(user: EntitledUser, session: DbSession) -> Organizatio
             code="org_not_provisioned",
             detail={"org_slug": slug},
         )
+
+    # Bind the request's DB session to this tenant for Postgres RLS filtering
+    # (fail-closed second layer beneath the explicit org_id filters).
+    await set_org_context(session, org.id)
     return org
 
 
 #: The calling operator's tenant. Routes compare child rows' ``org_id`` against
-#: ``CurrentOrg.id`` for row-level isolation (cross-org access → 404).
+#: ``CurrentOrg.id`` for row-level isolation (cross-org access → 404); resolving
+#: this dependency also arms Postgres RLS for the request (see above), so the
+#: database itself backstops those explicit filters.
 CurrentOrg = Annotated[Organization, Depends(get_current_org)]
 
 

@@ -19,6 +19,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.exc import NoResultFound
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -41,6 +42,19 @@ class RunRepository:
         """Return the run by primary key, or ``None``. Tenant isolation
         (``org_id`` check) is enforced by the caller (service / routes)."""
         return await self.session.get(Run, run_id)
+
+    async def list_for_engagement(self, engagement_id: uuid.UUID) -> list[Run]:
+        """Return all runs for an engagement, newest first.
+
+        Read-only; tenant isolation (``org_id`` check) is the caller's job — the
+        report service loads the engagement tenant-checked before calling this.
+        Unpaginated by design: a report renders the engagement's full run history."""
+        stmt = (
+            select(Run)
+            .where(Run.engagement_id == engagement_id)
+            .order_by(Run.created_at.desc(), Run.id.desc())
+        )
+        return list((await self.session.execute(stmt)).scalars().all())
 
     async def set_status(
         self,

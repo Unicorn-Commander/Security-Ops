@@ -171,7 +171,9 @@ async def start_run(
     # Detached worker owns its own session (the request session is gone by the time
     # a 30+ min scan finishes). A launch hiccup must not fail run creation — the run
     # stays PENDING and can be executed later.
-    _launch_worker(run_id=run.id, engagement_id=engagement.id, actor=actor)
+    _launch_worker(
+        run_id=run.id, engagement_id=engagement.id, org_id=run.org_id, actor=actor
+    )
     return run
 
 
@@ -252,11 +254,17 @@ def _launch_worker(
     *,
     run_id: uuid.UUID,
     engagement_id: uuid.UUID,
+    org_id: uuid.UUID,
     actor: "AuthUser",
 ) -> None:
-    """Schedule the detached Strix worker; never raise into the request path."""
+    """Schedule the detached Strix worker; never raise into the request path.
+
+    ``org_id`` is forwarded so the worker binds its own session to the tenant
+    under RLS (the worker has no request-scoped org context of its own)."""
     try:
-        launch_run_background(run_id=run_id, engagement_id=engagement_id, actor=actor)
+        launch_run_background(
+            run_id=run_id, engagement_id=engagement_id, org_id=org_id, actor=actor
+        )
     except RuntimeError as exc:
         # No running event loop (e.g. invoked from a sync management context). The
         # run is already committed PENDING and can be executed later.

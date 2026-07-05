@@ -20,6 +20,7 @@ from fastapi import APIRouter, Query, status
 
 from app.api.deps import CurrentOrg, DbSession, EntitledUser
 from app.authz.attestation import attest_target
+from app.authz.proof import proof_instructions
 from app.core.errors import NotFoundError
 from app.repositories.targets import TargetRepository
 from app.schemas.common import Page
@@ -72,6 +73,25 @@ async def get_target_route(
     if target is None or target.org_id != org.id:
         raise NotFoundError("Target not found")
     return TargetRead.model_validate(target)
+
+
+@router.get("/targets/{target_id}/attestation-challenge")
+async def attestation_challenge_route(
+    target_id: uuid.UUID,
+    session: DbSession,
+    org: CurrentOrg,
+) -> dict:
+    """Return the per-target challenge token + copy-paste proof instructions.
+
+    For external targets the operator must publish this unpredictable token (a DNS
+    TXT record, a well-known file, or a ``Strix-Authorization`` header) BEFORE
+    attesting — the server independently verifies it (spec §4). Self-owned targets
+    can skip this and attest via ``OWNED`` / typed confirmation instead.
+    """
+    target = await TargetRepository(session).get(target_id)
+    if target is None or target.org_id != org.id:
+        raise NotFoundError("Target not found")
+    return proof_instructions(target)
 
 
 @router.post("/targets/{target_id}/attest", response_model=TargetRead)

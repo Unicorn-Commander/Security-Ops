@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
 from app.core.config import settings
-from app.db.session import close_db, engine, init_db
+from app.db.session import close_db, get_engine, init_db
 
 APP_TITLE = "Security-Ops API"
 APP_VERSION = "0.1.0"
@@ -81,7 +81,7 @@ else:  # pragma: no cover - api module lands in a sibling slice
 
 async def _db_ok() -> bool:
     try:
-        async with engine.connect() as conn:
+        async with get_engine().connect() as conn:
             await conn.execute(text("SELECT 1"))
         return True
     except Exception:

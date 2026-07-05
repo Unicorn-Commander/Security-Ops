@@ -30,6 +30,9 @@ seed:
 test:
 	python -m pytest $(PYTEST_ARGS)
 
+test-deps:
+	pip install -r requirements.txt -r requirements-dev.txt
+
 build:
 	$(COMPOSE) build
 

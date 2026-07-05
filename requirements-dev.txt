@@ -1,0 +1,13 @@
+# Security-Ops — test / dev-only dependencies (layer on top of requirements.txt).
+#
+#   pip install -r requirements.txt -r requirements-dev.txt
+#
+# The suite runs on Postgres in every real environment; the unit suite runs on an
+# in-memory aiosqlite database (the models declare portable JSON/Uuid variants) so
+# `make test` needs no container. RLS is Postgres-only and is exercised separately
+# (see tests/test_rls_postgres.py, skipped unless SECOPS_TEST_DATABASE_URL points
+# at a Postgres instance).
+
+pytest==8.3.4
+pytest-asyncio==0.25.2
+aiosqlite==0.20.0        # async SQLite driver for the unit-test database

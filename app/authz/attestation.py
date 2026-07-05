@@ -22,12 +22,14 @@ nor services / api.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any
+from datetime import datetime, timedelta, timezone
+from typing import TYPE_CHECKING, Any, Callable
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.audit.writer import record_event
+from app.authz.proof import ProofResult, is_proof_method, verify_proof
+from app.core.config import settings
 from app.core.errors import NotFoundError, ValidationAppError
 from app.models.audit import AuditAction
 from app.models.target import AttestationMethod, AttestationStatus, AuthorizedTarget
@@ -37,7 +39,8 @@ if TYPE_CHECKING:  # pragma: no cover - typing only; never imported at runtime
 
 __all__ = ["attestation_is_valid", "attest_target"]
 
-# Ownership-proof methods (external targets): the operator must supply evidence.
+# Ownership-proof methods (external targets): the operator must supply evidence
+# AND the server independently verifies a live ownership proof (app.authz.proof).
 _PROOF_METHODS = frozenset(
     {
         AttestationMethod.DNS_TXT,
@@ -45,6 +48,9 @@ _PROOF_METHODS = frozenset(
         AttestationMethod.HTTP_HEADER,
     }
 )
+
+#: Signature of an injectable proof verifier (defaults to the live verifier).
+ProofVerifier = Callable[[AuthorizedTarget, AttestationMethod], ProofResult]
 
 
 def _utcnow() -> datetime:
@@ -97,6 +103,7 @@ async def attest_target(
     typed_confirmation: str | None = None,
     evidence: dict[str, Any] | None = None,
     expires_at: datetime | None = None,
+    verifier: ProofVerifier | None = None,
 ) -> AuthorizedTarget:
     """Attest ``target_id`` so the gate will treat it as scannable, and audit it.
 
@@ -105,15 +112,24 @@ async def attest_target(
     * every method except ``OWNED`` requires an explicit ``checkbox_ack``;
     * ``TYPED_CONFIRMATION`` additionally requires a non-empty ``typed_confirmation``;
     * the ownership-proof methods (``DNS_TXT`` / ``FILE_DROP`` / ``HTTP_HEADER``)
-      require ``evidence`` (the proof payload is recorded; live proof verification
-      is Phase 3);
-    * a supplied ``expires_at`` must be in the future.
+      are **verified live** against the asset (:mod:`app.authz.proof`): the server
+      re-derives the per-target challenge token and confirms the operator actually
+      published it (DNS TXT record / well-known file / ``Strix-Authorization``
+      header). A proof that does not resolve raises 422 and the target stays
+      unattested — a scan therefore remains impossible. (Set
+      ``settings.attestation_skip_live_proof`` only in air-gapped/test envs.)
+    * a supplied ``expires_at`` must be in the future; for external-proof methods a
+      default lifetime (``settings.attestation_default_ttl_days``) is applied when
+      none is given, so external authorizations always expire.
 
     On success it sets status ``ATTESTED`` (clearing any prior revocation/expiry),
-    records who/when/how, appends exactly one ``TARGET_ATTESTED`` audit row, and
-    returns the (uncommitted) target. Raises :class:`ValidationAppError` (422) on a
-    failed minimum and :class:`NotFoundError` (404) if the target is gone. The
-    caller owns the commit.
+    records who/when/how + the live proof result, appends exactly one
+    ``TARGET_ATTESTED`` audit row, and returns the (uncommitted) target. Raises
+    :class:`ValidationAppError` (422) on a failed minimum or unmet proof, and
+    :class:`NotFoundError` (404) if the target is gone. The caller owns the commit.
+
+    ``verifier`` is injectable (tests / alternate transports); it defaults to the
+    live :func:`app.authz.proof.verify_proof`.
     """
     target = await session.get(AuthorizedTarget, target_id)
     if target is None:
@@ -122,14 +138,22 @@ async def attest_target(
     method = _coerce_method(method)
     _enforce_minimums(method, checkbox_ack, typed_confirmation, evidence, expires_at)
 
+    # External-target ownership proof — VERIFIED live, not merely recorded.
+    proof_evidence: dict[str, Any] | None = None
+    if is_proof_method(method):
+        proof_evidence = _verify_ownership_proof(target, method, verifier)
+
     now = _utcnow()
+    effective_expiry = _effective_expiry(method, expires_at, now)
+
     target.attestation_status = AttestationStatus.ATTESTED
     target.attestation_method = method
     target.attested_by = _principal_ref(principal)
     target.attested_at = now
-    if evidence is not None:
-        target.attestation_evidence = evidence
-    target.expires_at = expires_at
+    merged_evidence = _merge_evidence(evidence, proof_evidence)
+    if merged_evidence is not None:
+        target.attestation_evidence = merged_evidence
+    target.expires_at = effective_expiry
     target.revoked_at = None
 
     # Persist the mutation before the audit append so any DB error surfaces here;
@@ -151,11 +175,68 @@ async def attest_target(
             "method": method.value,
             "checkbox_ack": bool(checkbox_ack),
             "typed_confirmation": bool((typed_confirmation or "").strip()),
-            "expires_at": expires_at.isoformat() if isinstance(expires_at, datetime) else None,
-            "evidence_keys": sorted(evidence) if isinstance(evidence, dict) else None,
+            "expires_at": effective_expiry.isoformat() if isinstance(effective_expiry, datetime) else None,
+            "evidence_keys": sorted(merged_evidence) if isinstance(merged_evidence, dict) else None,
+            "proof_verified": bool(proof_evidence and proof_evidence.get("verified")),
         },
     )
     return target
+
+
+def _verify_ownership_proof(
+    target: AuthorizedTarget,
+    method: AttestationMethod,
+    verifier: ProofVerifier | None,
+) -> dict[str, Any]:
+    """Run (or skip) the live ownership proof; raise 422 if it does not verify.
+
+    Returns the proof evidence dict to persist. When
+    ``settings.attestation_skip_live_proof`` is set (air-gapped / test), the live
+    check is bypassed and a ``skipped`` evidence marker is recorded instead — this
+    switch must NEVER be enabled in production.
+    """
+    if settings.attestation_skip_live_proof:
+        return {"verified": True, "method": method.value, "proof": "skipped_live_verification"}
+
+    verify = verifier or verify_proof
+    result = verify(target, method)
+    evidence = result.as_evidence() if isinstance(result, ProofResult) else dict(result)
+    if not evidence.get("verified"):
+        raise ValidationAppError(
+            f"ownership proof for {method.value} did not verify against {target.value!r}",
+            code="attestation_proof_failed",
+            detail={
+                "method": method.value,
+                "target": target.value,
+                "expected_token": evidence.get("token"),
+                "location": evidence.get("location"),
+            },
+        )
+    return evidence
+
+
+def _effective_expiry(
+    method: AttestationMethod, expires_at: datetime | None, now: datetime
+) -> datetime | None:
+    """Apply a default lifetime for external-proof attestations lacking an expiry."""
+    if expires_at is not None:
+        return expires_at
+    if is_proof_method(method):
+        days = max(int(settings.attestation_default_ttl_days or 0), 1)
+        return now + timedelta(days=days)
+    return None
+
+
+def _merge_evidence(
+    supplied: dict[str, Any] | None, proof: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    """Combine operator-supplied evidence with the server's live-proof record."""
+    if supplied is None and proof is None:
+        return None
+    merged: dict[str, Any] = dict(supplied or {})
+    if proof is not None:
+        merged["ownership_proof"] = proof
+    return merged
 
 
 # ---------------------------------------------------------------------------
@@ -180,12 +261,10 @@ def _enforce_minimums(
             code="attestation_incomplete",
             detail={"field": "typed_confirmation"},
         )
-    if method in _PROOF_METHODS and not evidence:
-        raise ValidationAppError(
-            f"{method.value} attestation requires ownership-proof evidence",
-            code="attestation_incomplete",
-            detail={"field": "evidence", "method": method.value},
-        )
+    # NOTE: ownership-proof methods no longer require operator-supplied evidence —
+    # the server derives its own per-target challenge token and VERIFIES the proof
+    # live (see attest_target -> _verify_ownership_proof), which is strictly
+    # stronger than trusting a client-provided evidence blob.
     if expires_at is not None and (_aware(expires_at) or _utcnow()) <= _utcnow():
         raise ValidationAppError(
             "attestation expiry must be in the future",

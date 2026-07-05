@@ -50,7 +50,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, settings
 from app.core.errors import ConflictError, NotFoundError, ValidationAppError
-from app.db.session import async_session
+from app.db.session import get_sessionmaker
 from app.models.audit import AuditAction
 from app.models.finding import Finding, FindingSeverity, FindingStatus
 from app.models.run import Run, RunMode, RunStatus
@@ -925,6 +925,7 @@ async def execute_run(
     *,
     run_id: uuid.UUID,
     engagement_id: uuid.UUID,
+    org_id: uuid.UUID | None = None,
     actor: "AuthUser | str" = "system:strix-runner",
     timeout: float | None = None,
     scope_mode: str | None = None,
@@ -936,29 +937,49 @@ async def execute_run(
     gate passes and the PENDING run is committed. It owns its own session because the
     request session that created the run is already closed by the time the (30+ min)
     scan runs.
+
+    RLS: the detached worker has NO request context, so ``org_id`` MUST be threaded
+    in (``start_run`` supplies ``run.org_id``). It is bound to the session GUC
+    *before* the first query — otherwise, on a Postgres instance with the
+    ``0002_org_rls`` policies active, the run/engagement/findings rows would be
+    invisible/unwritable to this connection (fail-closed). The context is cleared
+    on exit so the pooled connection carries no tenant state to its next borrower.
     """
-    async with async_session() as session:
-        runner = StrixRunner(session)
-        run = await runner.runs.get(run_id)
-        if run is None:
-            raise NotFoundError(f"run {run_id} not found")
-        engagement = await EngagementRepository(session).get(engagement_id)
-        if engagement is None:
-            raise NotFoundError(f"engagement {engagement_id} not found")
-        return await runner.execute(
-            run=run,
-            engagement=engagement,
-            actor=actor,
-            timeout=timeout,
-            scope_mode=scope_mode,
-            diff_base=diff_base,
-        )
+    from app.db.rls import clear_org_context, set_org_context  # lazy: avoid cycle
+
+    async with get_sessionmaker()() as session:
+        if org_id is not None:
+            await set_org_context(session, org_id)
+        try:
+            runner = StrixRunner(session)
+            run = await runner.runs.get(run_id)
+            if run is None:
+                raise NotFoundError(f"run {run_id} not found")
+            engagement = await EngagementRepository(session).get(engagement_id)
+            if engagement is None:
+                raise NotFoundError(f"engagement {engagement_id} not found")
+            return await runner.execute(
+                run=run,
+                engagement=engagement,
+                actor=actor,
+                timeout=timeout,
+                scope_mode=scope_mode,
+                diff_base=diff_base,
+            )
+        finally:
+            if org_id is not None:
+                try:
+                    await clear_org_context(session)
+                    await session.commit()
+                except Exception:  # noqa: BLE001 - teardown must not mask the run result
+                    log.warning("strix.execute: failed to clear org context", exc_info=True)
 
 
 def launch_run_background(
     *,
     run_id: uuid.UUID,
     engagement_id: uuid.UUID,
+    org_id: uuid.UUID | None = None,
     actor: "AuthUser | str" = "system:strix-runner",
     timeout: float | None = None,
     scope_mode: str | None = None,
@@ -967,7 +988,8 @@ def launch_run_background(
     """Fire-and-forget the run as an asyncio task (detached from the request lifecycle).
 
     Returns the task so a caller/test can await it. Exceptions are logged, never raised
-    into the event loop's default handler.
+    into the event loop's default handler. ``org_id`` is threaded through to bind the
+    worker's session to the tenant under RLS (see :func:`execute_run`).
     """
 
     async def _worker() -> None:
@@ -975,6 +997,7 @@ def launch_run_background(
             await execute_run(
                 run_id=run_id,
                 engagement_id=engagement_id,
+                org_id=org_id,
                 actor=actor,
                 timeout=timeout,
                 scope_mode=scope_mode,

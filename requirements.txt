@@ -22,4 +22,7 @@ pydantic-settings==2.7.0    # app.core.config Settings (SECOPS_ env prefix, .env
 PyJWT[crypto]==2.10.1       # app.auth.sso: jwt + RSAAlgorithm.from_jwk (needs cryptography)
 
 # --- HTTP client ------------------------------------------------------------
-httpx==0.28.1               # app.auth.sso JWKS fetch; app.engine.brigade_handoff
+httpx==0.28.1               # app.auth.sso JWKS fetch; app.engine.brigade_handoff; app.authz.proof
+
+# --- DNS (external-target ownership proof) ----------------------------------
+dnspython==2.7.0            # app.authz.proof DNS-TXT ownership verification (lazy import)
