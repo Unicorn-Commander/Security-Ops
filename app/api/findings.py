@@ -3,8 +3,15 @@
 Endpoints (all under ``/api/v1``; every route requires SSO + the
 ``security-ops`` entitlement, enforced transitively via ``CurrentOrg``):
 
+    GET    /findings                       -> Page[FindingRead] (org-scoped inbox)
     GET    /findings/{finding_id}          -> FindingRead
     POST   /findings/{finding_id}/handoff  -> FindingRead (hands to Brigade)
+
+The ``GET /findings`` collection list is the org-scoped, read-only findings
+inbox the console renders; it filters on the caller's org via ``CurrentOrg`` so a
+caller only ever sees their own tenant's findings. It is declared ABOVE the
+``/findings/{finding_id}`` param route so the literal collection path is never
+shadowed.
 
 Findings carry a denormalized ``org_id`` (for row-level isolation), which the
 read/handoff routes check so a caller can only ever see their own org's data.
@@ -15,18 +22,47 @@ orchestrator surfaces an honest 501 rather than pretending to hand off.
 """
 
 import uuid
+from typing import Annotated
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 
 from app.api.deps import CurrentOrg, DbSession, EntitledUser
 from app.core.errors import NotFoundError
 from app.engine.brigade_handoff import handoff_finding
+from app.models.finding import FindingSeverity, FindingStatus
 from app.repositories.engagements import EngagementRepository
 from app.repositories.findings import FindingRepository
 from app.repositories.runs import RunRepository
+from app.schemas.common import Page
 from app.schemas.finding import FindingRead
 
 router = APIRouter(tags=["findings"])
+
+
+@router.get("/findings", response_model=Page[FindingRead])
+async def list_findings_route(
+    session: DbSession,
+    org: CurrentOrg,
+    severity: Annotated[FindingSeverity | None, Query()] = None,
+    status: Annotated[FindingStatus | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> Page[FindingRead]:
+    """Org-scoped findings inbox, newest first (console).
+
+    Filters on ``org.id`` in the repository (tenant isolation is the WHERE
+    clause), with optional ``severity`` and ``status`` filters. Read-only.
+    Declared above ``/findings/{finding_id}`` so the literal collection path is
+    never shadowed by the parameterized route."""
+    items, total = await FindingRepository(session).list_for_org(
+        org.id, severity=severity, status=status, limit=limit, offset=offset
+    )
+    return Page[FindingRead](
+        items=[FindingRead.model_validate(f) for f in items],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
 
 
 @router.get("/findings/{finding_id}", response_model=FindingRead)

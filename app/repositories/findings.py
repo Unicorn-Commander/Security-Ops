@@ -84,6 +84,42 @@ class FindingRepository:
         )
         return items, int(total or 0)
 
+    async def list_for_org(
+        self,
+        org_id: uuid.UUID,
+        *,
+        severity: FindingSeverity | None = None,
+        status: FindingStatus | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[list[Finding], int]:
+        """Return ``(items, total)`` for one org's findings inbox, newest first.
+
+        Org-scoped console list (spec §6): filters on the denormalized ``org_id``
+        so a caller only ever sees their own tenant's findings — tenant isolation
+        is the WHERE clause itself, not a post-hoc check. Optional ``severity`` and
+        ``status`` filters narrow the inbox (e.g. only CRITICAL, or only NEW).
+        ``total`` is the unpaginated count of the same predicate so the API can
+        render a ``Page``. Read-only; never commits.
+        """
+        predicate = [Finding.org_id == org_id]
+        if severity is not None:
+            predicate.append(Finding.severity == severity)
+        if status is not None:
+            predicate.append(Finding.status == status)
+        stmt = (
+            select(Finding)
+            .where(*predicate)
+            .order_by(Finding.created_at.desc(), Finding.id.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+        items = list((await self.session.execute(stmt)).scalars().all())
+        total = await self.session.scalar(
+            select(func.count()).select_from(Finding).where(*predicate)
+        )
+        return items, int(total or 0)
+
     async def create(
         self,
         *,

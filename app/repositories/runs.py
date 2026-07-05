@@ -19,7 +19,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import NoResultFound
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -55,6 +55,39 @@ class RunRepository:
             .order_by(Run.created_at.desc(), Run.id.desc())
         )
         return list((await self.session.execute(stmt)).scalars().all())
+
+    async def list_for_org(
+        self,
+        org_id: uuid.UUID,
+        *,
+        status: RunStatus | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[list[Run], int]:
+        """Return ``(items, total)`` for one org's runs, newest first.
+
+        Org-scoped console list (spec §6): filters on the denormalized ``org_id``
+        so a caller only ever sees their own tenant's runs — tenant isolation is
+        the WHERE clause itself, not a post-hoc check. An optional ``status``
+        narrows the window to one lifecycle state (e.g. RUNNING). ``total`` is the
+        unpaginated count of the same (org + status) predicate so the API can
+        render a ``Page``. Read-only; never commits.
+        """
+        predicate = [Run.org_id == org_id]
+        if status is not None:
+            predicate.append(Run.status == status)
+        stmt = (
+            select(Run)
+            .where(*predicate)
+            .order_by(Run.created_at.desc(), Run.id.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+        items = list((await self.session.execute(stmt)).scalars().all())
+        total = await self.session.scalar(
+            select(func.count()).select_from(Run).where(*predicate)
+        )
+        return items, int(total or 0)
 
     async def set_status(
         self,

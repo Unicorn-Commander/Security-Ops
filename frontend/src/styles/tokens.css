@@ -1,0 +1,114 @@
+/* Security-Ops — design tokens.
+ *
+ * One dark, high-craft security-console theme: layered near-black surfaces, a
+ * signature indigo→cyan accent ("authorized offensive security"), a calibrated
+ * severity heat ramp, and reserved status colors. Everything downstream reads
+ * these variables — never a raw hex. */
+
+:root {
+  /* ---- Surfaces (deepest → most elevated) --------------------------------- */
+  --bg:            #08090e;
+  --bg-grad-a:     #0b0e17;
+  --bg-grad-b:     #080a11;
+  --surface:       #0e1119;
+  --surface-2:     #141824;
+  --surface-3:     #1a1f2e;
+  --surface-4:     #212739;
+  --surface-inset: #0a0c13;
+
+  /* Hairline borders — low-luminosity with a faint top highlight applied per-component. */
+  --border:        #232a3a;
+  --border-2:      #2c3446;
+  --border-strong: #3a4459;
+  --hairline:      rgba(255, 255, 255, 0.06);
+
+  /* ---- Ink ---------------------------------------------------------------- */
+  --text:      #eef1f7;
+  --text-2:    #b3bccc;
+  --muted:     #8b96ab;   /* ≥4.5:1 on the app surfaces — used for readable secondary text */
+  --faint:     #6a7488;   /* decorative only (chevrons, dividers) — never load-bearing text */
+
+  /* ---- Signature accent (indigo → violet → cyan aurora) ------------------- */
+  --accent:        #6d6bff;
+  --accent-strong: #8a7bff;
+  --accent-2:      #34d3e0;
+  --accent-ink:    #ffffff;
+  --accent-soft:   rgba(109, 107, 255, 0.14);
+  --accent-softer: rgba(109, 107, 255, 0.08);
+  --accent-glow:   rgba(109, 107, 255, 0.45);
+  --aurora: linear-gradient(120deg, #6d6bff 0%, #8a7bff 42%, #34d3e0 100%);
+  --aurora-soft: linear-gradient(120deg, rgba(109,107,255,0.16), rgba(52,211,224,0.12));
+
+  /* ---- Status (reserved — never reused as chart series) ------------------- */
+  --ok:        #2fce8f;
+  --ok-soft:   rgba(47, 206, 143, 0.14);
+  --info:      #4a9eff;
+  --info-soft: rgba(74, 158, 255, 0.14);
+  --warn:      #f5b13d;
+  --warn-soft: rgba(245, 177, 61, 0.14);
+  --danger:    #fb5a67;
+  --danger-soft: rgba(251, 90, 103, 0.14);
+  --danger-strong: #ff7079;
+
+  /* ---- Severity heat ramp (ordered: info → critical) ---------------------- */
+  --sev-info:     #7b8598;
+  --sev-low:      #46a6ff;
+  --sev-medium:   #f5b13d;
+  --sev-high:     #fb8b3d;
+  --sev-critical: #fb5a67;
+  --sev-info-soft:     rgba(123, 133, 152, 0.15);
+  --sev-low-soft:      rgba(70, 166, 255, 0.15);
+  --sev-medium-soft:   rgba(245, 177, 61, 0.15);
+  --sev-high-soft:     rgba(251, 139, 61, 0.15);
+  --sev-critical-soft: rgba(251, 90, 103, 0.16);
+
+  /* ---- Radius ------------------------------------------------------------- */
+  --r-xs: 5px;
+  --r-sm: 8px;
+  --r:    11px;
+  --r-lg: 15px;
+  --r-xl: 22px;
+  --r-pill: 999px;
+
+  /* ---- Spacing scale (4px base) ------------------------------------------- */
+  --s-1: 4px;  --s-2: 8px;  --s-3: 12px; --s-4: 16px;
+  --s-5: 20px; --s-6: 24px; --s-7: 32px; --s-8: 40px; --s-9: 56px;
+
+  /* ---- Elevation ---------------------------------------------------------- */
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.4);
+  --shadow:    0 6px 20px -6px rgba(0,0,0,0.5), 0 2px 6px rgba(0,0,0,0.35);
+  --shadow-lg: 0 24px 60px -16px rgba(0,0,0,0.65), 0 8px 24px rgba(0,0,0,0.4);
+  --shadow-glow: 0 0 0 1px var(--accent-soft), 0 8px 30px -8px var(--accent-glow);
+  /* Keyboard focus: an opaque accent stroke offset from the surface + a soft halo,
+   * so focus is unmistakable on near-black backgrounds (WCAG 2.4.11 / 1.4.11). */
+  --ring: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent), 0 0 0 7px var(--accent-soft);
+
+  /* ---- Type --------------------------------------------------------------- */
+  --font: "Inter Variable", "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "SF Mono", SFMono-Regular, Menlo, "Cascadia Code", Consolas, monospace;
+
+  --t-display: 28px;
+  --t-h1: 21px;
+  --t-h2: 16px;
+  --t-h3: 13px;
+  --t-body: 13.5px;
+  --t-sm: 12.5px;
+  --t-xs: 11px;
+
+  /* ---- Motion ------------------------------------------------------------- */
+  --ease: cubic-bezier(0.22, 0.68, 0.16, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --dur-1: 120ms;
+  --dur-2: 200ms;
+  --dur-3: 320ms;
+
+  /* ---- Layout ------------------------------------------------------------- */
+  --sidebar-w: 236px;
+  --topbar-h: 60px;
+  --content-max: 1240px;
+}
+
+/* Respect reduced-motion globally. */
+@media (prefers-reduced-motion: reduce) {
+  * { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; }
+}

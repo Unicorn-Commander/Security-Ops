@@ -4,9 +4,14 @@ Endpoints (all under ``/api/v1``; every route requires SSO + the
 ``security-ops`` entitlement, enforced transitively via ``CurrentOrg``):
 
     POST   /engagements/{engagement_id}/runs -> RunRead (201)  [GATE-ENFORCED]
+    GET    /runs                             -> Page[RunRead]   (org-scoped list)
     GET    /runs/{run_id}                    -> RunRead
     POST   /runs/{run_id}/stop               -> RunRead
     GET    /runs/{run_id}/findings           -> Page[FindingRead]
+
+The ``GET /runs`` collection list is org-scoped and read-only (it powers the
+console): it filters on the caller's org via ``CurrentOrg`` so a caller only
+ever sees their own tenant's runs.
 
 The run-start route delegates to ``app.services.runs.start_run``, which is the
 authoritative server-side enforcement path: it calls
@@ -25,9 +30,11 @@ from app.api.deps import CurrentOrg, DbSession, EntitledUser
 from app.core.errors import NotFoundError
 from app.repositories.engagements import EngagementRepository
 from app.repositories.findings import FindingRepository
+from app.repositories.runs import RunRepository
 from app.schemas.common import Page
 from app.schemas.finding import FindingRead
 from app.schemas.run import RunCreate, RunRead
+from app.models.run import RunStatus
 from app.services.runs import get_run, start_run, stop_run
 
 router = APIRouter(tags=["runs"])
@@ -66,6 +73,31 @@ async def start_run_route(
 
     run = await start_run(session, engagement=engagement, actor=user, data=data)
     return RunRead.model_validate(run)
+
+
+@router.get("/runs", response_model=Page[RunRead])
+async def list_runs_route(
+    session: DbSession,
+    org: CurrentOrg,
+    status: Annotated[RunStatus | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> Page[RunRead]:
+    """Org-scoped list of the caller's runs, newest first (console).
+
+    Filters on ``org.id`` in the repository (tenant isolation is the WHERE
+    clause), with an optional ``status`` lifecycle filter. Read-only. Declared
+    above ``/runs/{run_id}`` so the literal collection path is never shadowed by
+    the parameterized route."""
+    items, total = await RunRepository(session).list_for_org(
+        org.id, status=status, limit=limit, offset=offset
+    )
+    return Page[RunRead](
+        items=[RunRead.model_validate(r) for r in items],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
 
 
 @router.get("/runs/{run_id}", response_model=RunRead)

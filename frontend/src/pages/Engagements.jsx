@@ -1,281 +1,258 @@
+/* Engagements — the scope-of-engagement records the authorization gate enforces.
+ * Live scope-check (gate preview), create drawer with a scope-rule builder,
+ * activate / emergency-stop, and branded report export. */
 import React from 'react';
+import { api } from '../lib/api.js';
+import { useResource, useMutation } from '../lib/hooks.js';
+import { PageHead, StatusBadge, EmptyState, SkeletonRows, ErrorBanner, Drawer, useToast, useConfirm, CopyButton, rowActivate } from '../components/ui.jsx';
+import { ShieldIcon, PlusIcon, PlayIcon, StopIcon, CrosshairIcon, CircleCheckIcon, CircleXIcon, FileIcon, CheckIcon, XIcon, ChevronRightIcon } from '../components/icons.jsx';
+import { fmtDate, relTime, titleCase } from '../lib/format.js';
 import { Link } from 'react-router-dom';
 
-// --- tiny self-contained API client (blueprint's src/api/client.js is a sibling
-// module owned by another builder; this reduced skeleton stays runnable on its
-// own by speaking the same '/api/v1' + {error:{code,message,detail}} envelope). ---
-const API = '/api/v1';
+const KINDS = ['DOMAIN', 'URL', 'IP_RANGE', 'REPO'];
+const PROFILES = ['hybrid-local-sweep-verify', 'local-sweep', 'local-verify', 'frontier-verify'];
+const INTENSITY = ['QUICK', 'STANDARD', 'DEEP'];
+const rule = () => ({ kind: 'DOMAIN', value: '' });
 
-async function apiFetch(path, { method = 'GET', body } = {}) {
-  const token = localStorage.getItem('secops_token');
-  const headers = { 'Content-Type': 'application/json' };
-  if (token) headers.Authorization = `Bearer ${token}`;
-  const res = await fetch(API + path, {
-    method,
-    headers,
-    body: body != null ? JSON.stringify(body) : undefined,
-  });
-  const raw = await res.text();
-  let data = null;
-  try { data = raw ? JSON.parse(raw) : null; } catch { data = null; }
-  if (!res.ok) {
-    const env = (data && data.error) || {};
-    const err = new Error(env.message || `Request failed (${res.status})`);
-    err.code = env.code || 'error';
-    err.detail = env.detail || null;
-    err.status = res.status;
-    throw err;
-  }
-  return data;
-}
-
-function fmt(dt) {
-  if (!dt) return '—';
-  try { return new Date(dt).toLocaleString(); } catch { return String(dt); }
-}
-
-const TARGET_KINDS = ['DOMAIN', 'URL', 'IP_RANGE', 'REPO'];
-const RUN_MODES = ['QUICK', 'STANDARD', 'DEEP'];
-
-const STATUS_COLORS = {
-  DRAFT: '#64748b', ACTIVE: '#16a34a', PAUSED: '#d97706',
-  COMPLETED: '#2563eb', STOPPED: '#dc2626', EXPIRED: '#78716c',
-};
-function StatusBadge({ value }) {
-  return <span className="badge" style={{ background: STATUS_COLORS[value] || '#475569' }}>{value}</span>;
-}
-
-const emptyRule = () => ({ kind: 'DOMAIN', value: '' });
-
-function RuleList({ title, hint, rules, setRules }) {
+function RuleBuilder({ title, hint, rules, setRules }) {
   const patch = (i, p) => setRules(rules.map((r, j) => (j === i ? { ...r, ...p } : r)));
   return (
     <div className="field">
       <label className="label">{title}</label>
-      {rules.length === 0 && <div className="muted" style={{ marginBottom: 6 }}>none</div>}
       {rules.map((r, i) => (
-        <div className="row" key={i} style={{ marginBottom: 6 }}>
-          <select className="select" style={{ width: 130 }} value={r.kind} onChange={(e) => patch(i, { kind: e.target.value })}>
-            {TARGET_KINDS.map((k) => <option key={k} value={k}>{k}</option>)}
+        <div className="row" key={i} style={{ marginBottom: 6, flexWrap: 'nowrap' }}>
+          <select className="select" style={{ width: 118, flex: 'none' }} value={r.kind} onChange={(e) => patch(i, { kind: e.target.value })}>
+            {KINDS.map((k) => <option key={k}>{k}</option>)}
           </select>
-          <input
-            className="input" style={{ flex: 1, minWidth: 200 }} value={r.value}
-            placeholder={hint}
-            onChange={(e) => patch(i, { value: e.target.value })}
-          />
-          <button type="button" className="btn btn-ghost btn-sm" onClick={() => setRules(rules.filter((_, j) => j !== i))}>{'✕'}</button>
+          <input className="input mono grow" value={r.value} placeholder={hint} onChange={(e) => patch(i, { value: e.target.value })} />
+          <button type="button" className="iconbtn" aria-label="Remove scope rule" onClick={() => setRules(rules.filter((_, j) => j !== i))}><XIcon size={15} /></button>
         </div>
       ))}
-      <button type="button" className="btn btn-ghost btn-sm" onClick={() => setRules([...rules, emptyRule()])}>+ add rule</button>
+      <button type="button" className="btn btn--sm btn--ghost" onClick={() => setRules([...rules, rule()])} style={{ marginTop: 4 }}><PlusIcon size={13} />Add rule</button>
     </div>
   );
 }
 
-export default function Engagements() {
-  const [items, setItems] = React.useState([]);
-  const [loading, setLoading] = React.useState(true);
-  const [error, setError] = React.useState(null);
+function ScopeCheck({ engagements }) {
+  const [engId, setEngId] = React.useState('');
+  const [target, setTarget] = React.useState('');
+  const [result, setResult] = React.useState(null);
+  const { run, busy } = useMutation();
 
-  // create-engagement form
-  const [name, setName] = React.useState('');
-  const [modelProfile, setModelProfile] = React.useState('hybrid-local-sweep-verify');
-  const [intensity, setIntensity] = React.useState('STANDARD');
-  const [inScope, setInScope] = React.useState([emptyRule()]);
-  const [exclusions, setExclusions] = React.useState([]);
-  const [creating, setCreating] = React.useState(false);
-  const [formMsg, setFormMsg] = React.useState(null);
+  React.useEffect(() => { if (!engId && engagements.length) setEngId(engagements.find((e) => e.status === 'ACTIVE')?.id || engagements[0].id); }, [engagements, engId]);
 
-  // scope dry-run (POST /engagements/{id}/scope/check — no audit-deny side effect)
-  const [checkEng, setCheckEng] = React.useState('');
-  const [checkTarget, setCheckTarget] = React.useState('');
-  const [checkResult, setCheckResult] = React.useState(null);
-  const [checking, setChecking] = React.useState(false);
-
-  async function load() {
-    setLoading(true); setError(null);
-    try {
-      const page = await apiFetch('/engagements?limit=100&offset=0');
-      setItems(page.items || []);
-    } catch (e) { setError(e); }
-    finally { setLoading(false); }
-  }
-  React.useEffect(() => { load(); }, []);
-
-  async function submitCreate(e) {
+  async function check(e) {
     e.preventDefault();
-    setCreating(true); setFormMsg(null);
-    try {
-      const payload = {
-        name: name.trim(),
-        model_profile: modelProfile.trim() || 'hybrid-local-sweep-verify',
-        scope: {
-          in_scope: inScope.filter((r) => r.value.trim()).map((r) => ({ kind: r.kind, value: r.value.trim() })),
-          exclusions: exclusions.filter((r) => r.value.trim()).map((r) => ({ kind: r.kind, value: r.value.trim() })),
-          rules_of_engagement: {
-            intensity,
-            allowed_vuln_classes: [],
-            max_concurrency: 1,
-          },
-        },
-      };
-      const created = await apiFetch('/engagements', { method: 'POST', body: payload });
-      setFormMsg({ ok: true, text: `Created "${created.name}" (${created.status}). Attest its in-scope targets, then Activate.` });
-      setName(''); setInScope([emptyRule()]); setExclusions([]);
-      await load();
-    } catch (e) {
-      setFormMsg({ ok: false, text: `${e.code}: ${e.message}` });
-    } finally { setCreating(false); }
-  }
-
-  async function activate(id) {
-    setError(null);
-    try { await apiFetch(`/engagements/${id}/activate`, { method: 'POST' }); await load(); }
-    catch (e) { setError(e); }
-  }
-
-  async function emergencyStop(id) {
-    if (!window.confirm('Emergency stop this engagement? This halts all runs and sets it STOPPED.')) return;
-    setError(null);
-    try { await apiFetch(`/engagements/${id}/stop`, { method: 'POST' }); await load(); }
-    catch (e) { setError(e); }
-  }
-
-  async function runScopeCheck(e) {
-    e.preventDefault();
-    if (!checkEng || !checkTarget.trim()) return;
-    setChecking(true); setCheckResult(null);
-    try {
-      const dec = await apiFetch(`/engagements/${checkEng}/scope/check`, {
-        method: 'POST', body: { target: checkTarget.trim() },
-      });
-      setCheckResult(dec);
-    } catch (e) {
-      // Even a hard error carries the envelope code/message — surface it as a decision.
-      setCheckResult({ allowed: false, code: e.code, reason: e.message, target: checkTarget.trim(), violations: e.detail ? [JSON.stringify(e.detail)] : [] });
-    } finally { setChecking(false); }
+    if (!engId || !target.trim()) return;
+    try { setResult(await run(`/engagements/${engId}/scope/check`, { method: 'POST', body: { target: target.trim() } })); }
+    catch (err) { setResult({ allowed: false, code: err.code, reason: err.message, target: target.trim(), violations: err.detail ? [JSON.stringify(err.detail)] : [] }); }
   }
 
   return (
-    <div>
-      <h1>Engagements</h1>
-      <p className="muted">A scope-of-engagement is the record the authorization gate enforces. No run touches a target unless it is in an ACTIVE engagement and covered by a valid attested target.</p>
-
-      {error && <div className="error">{error.code}: {error.message}</div>}
-
-      {/* Create */}
-      <div className="card">
-        <h2>New engagement</h2>
-        {formMsg && <div className={formMsg.ok ? 'success' : 'error'}>{formMsg.text}</div>}
-        <form onSubmit={submitCreate}>
-          <div className="grid2">
-            <div className="field">
-              <label className="label">Name</label>
-              <input className="input" required value={name} onChange={(e) => setName(e.target.value)} placeholder="Q3 pilot — own suite" />
-            </div>
-            <div className="field">
-              <label className="label">Intensity (RoE)</label>
-              <select className="select" value={intensity} onChange={(e) => setIntensity(e.target.value)}>
-                {RUN_MODES.map((m) => <option key={m} value={m}>{m}</option>)}
-              </select>
-            </div>
-          </div>
-          <div className="field">
-            <label className="label">Model profile</label>
-            <input className="input" value={modelProfile} onChange={(e) => setModelProfile(e.target.value)} placeholder="hybrid-local-sweep-verify" />
-          </div>
-          <RuleList title="In scope" hint="domain glob (*.example.com) / URL prefix / CIDR / repo url" rules={inScope} setRules={setInScope} />
-          <RuleList title="Exclusions (never touch — wins over in-scope)" hint="path/host to exclude" rules={exclusions} setRules={setExclusions} />
-          <button className="btn" disabled={creating}>{creating ? 'Creating…' : 'Create engagement'}</button>
-        </form>
-      </div>
-
-      {/* Scope dry-run */}
-      <div className="card">
-        <h2>Scope check (dry-run)</h2>
-        <p className="muted">Preview the gate decision for a concrete target without recording an audit denial.</p>
-        <form onSubmit={runScopeCheck} className="row" style={{ alignItems: 'flex-end' }}>
-          <div className="field" style={{ marginBottom: 0, minWidth: 220, flex: 1 }}>
+    <div className="card" style={{ marginBottom: 'var(--s-6)' }}>
+      <div className="card__head"><CrosshairIcon size={16} style={{ color: 'var(--accent-strong)' }} /><h2>Gate preview</h2><span className="muted" style={{ fontSize: 12 }}>dry-run the authorization decision — no audit, no run</span></div>
+      <div className="card__body">
+        <form onSubmit={check} className="row" style={{ alignItems: 'flex-end', gap: 'var(--s-3)' }}>
+          <div className="field grow" style={{ minWidth: 200, maxWidth: 260 }}>
             <label className="label">Engagement</label>
-            <select className="select" value={checkEng} onChange={(e) => setCheckEng(e.target.value)}>
-              <option value="">select…</option>
-              {items.map((eg) => <option key={eg.id} value={eg.id}>{eg.name} ({eg.status})</option>)}
+            <select className="select" value={engId} onChange={(e) => setEngId(e.target.value)}>
+              {engagements.map((e) => <option key={e.id} value={e.id}>{e.name} · {e.status}</option>)}
             </select>
           </div>
-          <div className="field" style={{ marginBottom: 0, minWidth: 260, flex: 2 }}>
+          <div className="field grow" style={{ minWidth: 260 }}>
             <label className="label">Target</label>
-            <input className="input" value={checkTarget} onChange={(e) => setCheckTarget(e.target.value)} placeholder="https://brigade.unicorncommander.ai/login" />
+            <input className="input mono" value={target} onChange={(e) => setTarget(e.target.value)} placeholder="https://brigade.unicorncommander.ai/login" />
           </div>
-          <button className="btn" disabled={checking || !checkEng}>{checking ? 'Checking…' : 'Check'}</button>
+          <button className="btn btn--primary" disabled={busy || !engId}><CrosshairIcon size={15} />{busy ? 'Checking…' : 'Check'}</button>
         </form>
-        {checkResult && (
-          <div style={{ marginTop: 12 }}>
-            <span className="badge" style={{ background: checkResult.allowed ? '#16a34a' : '#dc2626' }}>
-              {checkResult.allowed ? 'ALLOWED' : 'DENIED'}
-            </span>
-            <span className="mono" style={{ marginLeft: 8 }}>{checkResult.code}</span>
-            <div className="muted" style={{ marginTop: 4 }}>{checkResult.reason}</div>
-            {checkResult.violations && checkResult.violations.length > 0 && (
-              <ul className="muted" style={{ margin: '6px 0 0 18px' }}>
-                {checkResult.violations.map((v, i) => <li key={i} className="mono">{v}</li>)}
-              </ul>
+        {result && (
+          <div className={`verdict ${result.allowed ? 'verdict--allow' : 'verdict--deny'}`} style={{ marginTop: 'var(--s-4)' }}>
+            <div className="verdict__head">
+              <div className="verdict__ic">{result.allowed ? <CircleCheckIcon size={18} /> : <CircleXIcon size={18} />}</div>
+              <div className="verdict__title">{result.allowed ? 'Allowed' : 'Denied'}</div>
+              <span className="chip" style={{ marginLeft: 'auto' }}>{result.code}</span>
+            </div>
+            <p style={{ marginTop: 8, color: 'var(--text-2)' }}>{result.reason}</p>
+            {result.violations?.length > 0 && (
+              <div className="row" style={{ gap: 6, marginTop: 8 }}>
+                {result.violations.map((v, i) => <span key={i} className="chip" style={{ color: 'var(--danger-strong)' }}>{v}</span>)}
+              </div>
             )}
           </div>
         )}
       </div>
+    </div>
+  );
+}
 
-      {/* List */}
-      <div className="card">
-        <h2>All engagements</h2>
-        {loading ? (
-          <div className="empty">Loading…</div>
-        ) : items.length === 0 ? (
-          <div className="empty">No engagements yet. Create one above.</div>
-        ) : (
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Name</th><th>Status</th><th>Profile</th><th>In scope</th><th>Created</th><th>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {items.map((eg) => {
-                  const inScopeRules = (eg.scope && eg.scope.in_scope) || [];
-                  return (
-                    <tr key={eg.id}>
-                      <td>
-                        <div>{eg.name}</div>
-                        <div className="mono muted" style={{ fontSize: 11 }}>{eg.id}</div>
-                        {eg.emergency_stopped && <span className="badge" style={{ background: '#dc2626', marginTop: 4 }}>E-STOP</span>}
-                      </td>
-                      <td><StatusBadge value={eg.status} /></td>
-                      <td className="mono">{eg.model_profile}</td>
-                      <td className="mono">
-                        {inScopeRules.length === 0 ? <span className="muted">—</span>
-                          : inScopeRules.map((r, i) => <div key={i}>{r.kind}: {r.value}</div>)}
-                      </td>
-                      <td className="muted">{fmt(eg.created_at)}</td>
-                      <td>
-                        <div className="row">
-                          {eg.status === 'DRAFT' && (
-                            <button className="btn btn-sm" onClick={() => activate(eg.id)}>Activate</button>
-                          )}
-                          {eg.status === 'ACTIVE' && (
-                            <Link className="btn btn-sm" to={`/runs?engagement=${eg.id}`}>Start run {'▸'}</Link>
-                          )}
-                          {!eg.emergency_stopped && eg.status !== 'STOPPED' && eg.status !== 'COMPLETED' && (
-                            <button className="btn btn-danger btn-sm" onClick={() => emergencyStop(eg.id)}>E-Stop</button>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+function CreateDrawer({ onClose, onCreated }) {
+  const toast = useToast();
+  const [name, setName] = React.useState('');
+  const [profile, setProfile] = React.useState(PROFILES[0]);
+  const [intensity, setIntensity] = React.useState('STANDARD');
+  const [inScope, setInScope] = React.useState([rule()]);
+  const [excl, setExcl] = React.useState([]);
+  const { run, busy, error } = useMutation();
+
+  async function submit(e) {
+    e.preventDefault();
+    const body = {
+      name: name.trim(), model_profile: profile,
+      scope: {
+        in_scope: inScope.filter((r) => r.value.trim()).map((r) => ({ kind: r.kind, value: r.value.trim() })),
+        exclusions: excl.filter((r) => r.value.trim()).map((r) => ({ kind: r.kind, value: r.value.trim() })),
+        rules_of_engagement: { intensity, allowed_vuln_classes: [], max_concurrency: 1 },
+      },
+    };
+    try {
+      const created = await run('/engagements', { method: 'POST', body });
+      toast({ title: `Engagement "${created.name}" created`, detail: 'Attest its targets, then activate.' });
+      onCreated();
+    } catch { /* surfaced inline */ }
+  }
+
+  return (
+    <Drawer title="New engagement" subtitle="Draft a scope the gate will enforce" onClose={onClose}
+      footer={<><button className="btn btn--ghost" onClick={onClose}>Cancel</button><button className="btn btn--primary" form="eng-form" disabled={busy || !name.trim()}>{busy ? 'Creating…' : 'Create engagement'}</button></>}>
+      <ErrorBanner error={error} />
+      <form id="eng-form" onSubmit={submit} className="stack">
+        <div className="field">
+          <label className="label">Name</label>
+          <input className="input" autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="ACME Corp — Q3 external" />
+        </div>
+        <div className="grid grid-2">
+          <div className="field">
+            <label className="label">Model profile</label>
+            <select className="select" value={profile} onChange={(e) => setProfile(e.target.value)}>{PROFILES.map((p) => <option key={p}>{p}</option>)}</select>
           </div>
+          <div className="field">
+            <label className="label">Intensity</label>
+            <div className="segmented">{INTENSITY.map((m) => <button type="button" key={m} className={intensity === m ? 'is-active' : ''} onClick={() => setIntensity(m)}>{titleCase(m)}</button>)}</div>
+          </div>
+        </div>
+        <hr className="divider" />
+        <RuleBuilder title="In scope" hint="*.example.com / https://app… / 10.0.0.0/24 / repo url" rules={inScope} setRules={setInScope} />
+        <RuleBuilder title="Exclusions — never touch (wins over in-scope)" hint="path or host to exclude" rules={excl} setRules={setExcl} />
+      </form>
+    </Drawer>
+  );
+}
+
+function DetailDrawer({ engagement, onClose, onChanged }) {
+  const toast = useToast();
+  const confirm = useConfirm();
+  const { run, busy } = useMutation();
+  const [report, setReport] = React.useState(null);
+  const e = engagement;
+  const inScopeN = (e.scope?.in_scope || []).length;
+  const exclN = (e.scope?.exclusions || []).length;
+
+  async function act(path, msg) {
+    try { await run(path, { method: 'POST' }); toast({ title: msg }); onChanged(); onClose(); }
+    catch (err) { toast({ kind: 'danger', title: err.message }); }
+  }
+  async function activate() {
+    const ok = await confirm({
+      title: 'Activate engagement?',
+      body: `Activating authorizes real scans against ${inScopeN} in-scope rule${inScopeN === 1 ? '' : 's'}${exclN ? ` (with ${exclN} exclusion${exclN === 1 ? '' : 's'})` : ''}. Only targets covered by a valid attestation will pass the gate.`,
+      confirmLabel: 'Activate',
+    });
+    if (ok) act(`/engagements/${e.id}/activate`, 'Engagement activated');
+  }
+  async function estop() {
+    const ok = await confirm({
+      title: 'Emergency-stop this engagement?',
+      body: `This revokes authorization for “${e.name}” and signals every running scan under it to halt immediately. The engagement is set to STOPPED and cannot run again until re-activated.`,
+      confirmLabel: 'Emergency stop',
+      danger: true,
+    });
+    if (ok) act(`/engagements/${e.id}/stop`, 'Emergency stop engaged');
+  }
+  async function loadReport() {
+    try { const md = await api(`/engagements/${e.id}/report?format=json`); setReport(typeof md === 'string' ? md : md.report_markdown); }
+    catch (err) { toast({ kind: 'danger', title: err.message }); }
+  }
+
+  return (
+    <Drawer title={e.name} subtitle={e.id} onClose={onClose}
+      footer={<>
+        {e.status === 'DRAFT' && <button className="btn btn--primary" disabled={busy} onClick={activate}><CheckIcon size={15} />Activate</button>}
+        {e.status === 'ACTIVE' && <Link className="btn btn--primary" to={`/runs?engagement=${e.id}`}><PlayIcon size={13} />Start run</Link>}
+        {!['STOPPED', 'COMPLETED', 'EXPIRED'].includes(e.status) && <button className="btn btn--danger" disabled={busy} onClick={estop}><StopIcon size={13} />E-Stop</button>}
+      </>}>
+      <div className="row-tight"><StatusBadge value={e.status} />{e.emergency_stopped && <span className="badge badge--danger"><span className="dot" />E-Stop</span>}</div>
+      <dl className="dl">
+        <dt>Profile</dt><dd className="mono">{e.model_profile}</dd>
+        <dt>Intensity</dt><dd>{titleCase(e.rules_of_engagement?.intensity || 'standard')}</dd>
+        <dt>Created</dt><dd>{fmtDate(e.created_at)} · <span className="muted">{e.created_by}</span></dd>
+        <dt>Expires</dt><dd>{e.expires_at ? fmtDate(e.expires_at) : 'no expiry'}</dd>
+      </dl>
+      <div>
+        <div className="label" style={{ marginBottom: 8 }}>In scope</div>
+        <div className="row" style={{ gap: 6 }}>{(e.scope?.in_scope || []).length === 0 ? <span className="muted">—</span> : e.scope.in_scope.map((r, i) => <span key={i} className="chip">{r.kind}: {r.value}</span>)}</div>
+      </div>
+      {(e.scope?.exclusions || []).length > 0 && (
+        <div>
+          <div className="label" style={{ marginBottom: 8 }}>Exclusions</div>
+          <div className="row" style={{ gap: 6 }}>{e.scope.exclusions.map((r, i) => <span key={i} className="chip" style={{ color: 'var(--danger-strong)' }}>{r.kind}: {r.value}</span>)}</div>
+        </div>
+      )}
+      <hr className="divider" />
+      <div>
+        <div className="row between" style={{ marginBottom: 8 }}>
+          <div className="label">Engagement report</div>
+          <button className="btn btn--sm btn--ghost" onClick={loadReport}><FileIcon size={14} />Generate</button>
+        </div>
+        {report ? (
+          <div className="codebox">
+            <div className="code" style={{ maxHeight: 260, whiteSpace: 'pre-wrap' }}>{report}</div>
+            <div className="copy"><CopyButton text={report} /></div>
+          </div>
+        ) : <div className="hint">Wraps the frontier-verified Strix report, branded for the client.</div>}
+      </div>
+    </Drawer>
+  );
+}
+
+export default function Engagements() {
+  const { data, loading, error, reload } = useResource(() => api('/engagements?limit=100'), []);
+  const [creating, setCreating] = React.useState(false);
+  const [selected, setSelected] = React.useState(null);
+  const items = data?.items || [];
+
+  return (
+    <div className="page">
+      <PageHead title="Engagements" subtitle="A scope-of-engagement is the record the authorization gate enforces. No run touches a target unless it sits in an active engagement and is covered by a valid attestation."
+        actions={<button className="btn btn--primary" onClick={() => setCreating(true)}><PlusIcon size={15} />New engagement</button>} />
+
+      <ErrorBanner error={error} />
+      {items.length > 0 && <ScopeCheck engagements={items} />}
+
+      <div className="card">
+        <div className="card__head"><ShieldIcon size={16} style={{ color: 'var(--muted)' }} /><h2>All engagements</h2><div className="spacer" /><span className="muted" style={{ fontSize: 12 }}>{items.length} total</span></div>
+        {loading ? <SkeletonRows rows={4} cols={5} /> : items.length === 0 ? (
+          <div className="card__body"><EmptyState icon={<ShieldIcon />} title="No engagements yet"><p className="muted">Create one, attest its targets, then activate to authorize scans.</p></EmptyState></div>
+        ) : (
+          <div className="tablewrap"><table className="tbl tbl--rows">
+            <thead><tr><th>Name</th><th>Status</th><th>Scope</th><th>Profile</th><th>Expires</th><th></th></tr></thead>
+            <tbody>
+              {items.map((e) => (
+                <tr key={e.id} {...rowActivate(() => setSelected(e), `Open engagement ${e.name}`)}>
+                  <td><div style={{ fontWeight: 560 }}>{e.name}</div><div className="muted" style={{ fontSize: 11 }}>{relTime(e.created_at)}</div></td>
+                  <td><StatusBadge value={e.status} /></td>
+                  <td><span className="muted">{(e.scope?.in_scope || []).length} in-scope{(e.scope?.exclusions || []).length ? ` · ${e.scope.exclusions.length} excl` : ''}</span></td>
+                  <td className="mono muted" style={{ fontSize: 12 }}>{e.model_profile}</td>
+                  <td className="muted">{e.expires_at ? fmtDate(e.expires_at, { time: false }) : '—'}</td>
+                  <td className="col-actions"><ChevronRightIcon size={16} style={{ color: 'var(--faint)' }} /></td>
+                </tr>
+              ))}
+            </tbody>
+          </table></div>
         )}
       </div>
+
+      {creating && <CreateDrawer onClose={() => setCreating(false)} onCreated={() => { setCreating(false); reload(); }} />}
+      {selected && <DetailDrawer engagement={selected} onClose={() => setSelected(null)} onChanged={reload} />}
     </div>
   );
 }

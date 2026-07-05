@@ -1,0 +1,91 @@
+/* Security-Ops — base layer: reset, typography, page atmosphere, focus, scrollbars. */
+
+*, *::before, *::after { box-sizing: border-box; }
+* { margin: 0; }
+
+html, body, #root { height: 100%; }
+
+body {
+  font-family: var(--font);
+  font-size: var(--t-body);
+  line-height: 1.55;
+  color: var(--text);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  font-feature-settings: "cv11", "ss01";
+}
+
+/* Atmospheric backdrop: deep vertical wash + two faint aurora glows, fixed so it
+ * doesn't scroll. Kept extremely subtle — presence, not decoration. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background:
+    radial-gradient(900px 520px at 82% -8%, rgba(109,107,255,0.10), transparent 60%),
+    radial-gradient(760px 460px at 8% 4%, rgba(52,211,224,0.055), transparent 55%),
+    linear-gradient(180deg, var(--bg-grad-a), var(--bg-grad-b));
+}
+
+a { color: inherit; text-decoration: none; }
+
+h1, h2, h3, h4 { font-weight: 640; letter-spacing: -0.014em; color: var(--text); }
+h1 { font-size: var(--t-h1); }
+h2 { font-size: var(--t-h2); }
+h3 { font-size: var(--t-h3); }
+
+.display {
+  font-size: var(--t-display);
+  font-weight: 680;
+  letter-spacing: -0.028em;
+  line-height: 1.1;
+}
+
+.mono { font-family: var(--mono); font-size: 0.92em; font-feature-settings: "zero"; }
+.muted { color: var(--muted); }
+.text-2 { color: var(--text-2); }
+.faint { color: var(--faint); }
+.nowrap { white-space: nowrap; }
+.tnum { font-variant-numeric: tabular-nums; }
+
+button, input, select, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; background: none; border: none; }
+
+::selection { background: var(--accent-soft); color: #fff; }
+
+/* Focus: no default outline, a soft accent ring on keyboard focus only. */
+:focus { outline: none; }
+:focus-visible { outline: none; box-shadow: var(--ring); border-radius: var(--r-xs); }
+
+/* Scrollbars — thin, on-surface, appear on hover of the scroll area. */
+* { scrollbar-width: thin; scrollbar-color: var(--surface-4) transparent; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--surface-4);
+  border: 3px solid transparent;
+  background-clip: padding-box;
+  border-radius: var(--r-pill);
+}
+::-webkit-scrollbar-thumb:hover { background: var(--border-strong); background-clip: padding-box; }
+
+/* Utility: keyframes shared across components. */
+@keyframes so-fade-up {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes so-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes so-shimmer { 100% { transform: translateX(100%); } }
+@keyframes so-spin { to { transform: rotate(360deg); } }
+@keyframes so-pulse-ring {
+  0%   { box-shadow: 0 0 0 0 var(--accent-glow); }
+  70%  { box-shadow: 0 0 0 6px transparent; }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+@keyframes so-scan {
+  0%   { transform: translateY(-100%); opacity: 0; }
+  40%  { opacity: 1; }
+  100% { transform: translateY(220%); opacity: 0; }
+}

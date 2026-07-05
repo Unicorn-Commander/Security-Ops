@@ -1,259 +1,307 @@
+/* Targets — the authorized-target registry the authorization gate consults.
+ * A target is only scannable once it passes attestation (valid, unexpired,
+ * not revoked). External assets need ownership proof (DNS_TXT / FILE_DROP /
+ * HTTP_HEADER); self-owned assets use OWNED. Register + attest live here. */
 import React from 'react';
+import { api } from '../lib/api.js';
+import { useResource, useMutation } from '../lib/hooks.js';
+import { PageHead, StatusBadge, EmptyState, SkeletonRows, ErrorBanner, Banner, Drawer, useToast, CopyButton, rowActivate } from '../components/ui.jsx';
+import {
+  TargetIcon, GlobeIcon, ServerIcon, GitIcon, PlusIcon, KeyIcon, CheckIcon,
+  ChevronRightIcon, ClockIcon, LockIcon,
+} from '../components/icons.jsx';
+import { fmtDate } from '../lib/format.js';
 
-const API = '/api/v1';
-
-async function apiFetch(path, { method = 'GET', body } = {}) {
-  const token = localStorage.getItem('secops_token');
-  const headers = { 'Content-Type': 'application/json' };
-  if (token) headers.Authorization = `Bearer ${token}`;
-  const res = await fetch(API + path, {
-    method,
-    headers,
-    body: body != null ? JSON.stringify(body) : undefined,
-  });
-  const raw = await res.text();
-  let data = null;
-  try { data = raw ? JSON.parse(raw) : null; } catch { data = null; }
-  if (!res.ok) {
-    const env = (data && data.error) || {};
-    const err = new Error(env.message || `Request failed (${res.status})`);
-    err.code = env.code || 'error';
-    err.detail = env.detail || null;
-    err.status = res.status;
-    throw err;
-  }
-  return data;
-}
-
-function fmt(dt) {
-  if (!dt) return '—';
-  try { return new Date(dt).toLocaleString(); } catch { return String(dt); }
-}
-
-const TARGET_KINDS = ['DOMAIN', 'URL', 'IP_RANGE', 'REPO'];
-// OWNED first — it's the self-owned escape hatch used by the pilot (your own suite).
-const ATTEST_METHODS = ['OWNED', 'CHECKBOX', 'TYPED_CONFIRMATION', 'DNS_TXT', 'FILE_DROP', 'HTTP_HEADER'];
-
-const ATTEST_COLORS = {
-  UNATTESTED: '#64748b', ATTESTED: '#16a34a', EXPIRED: '#d97706', REVOKED: '#dc2626',
+const KINDS = ['DOMAIN', 'URL', 'IP_RANGE', 'REPO'];
+const KIND_ICON = { DOMAIN: GlobeIcon, URL: GlobeIcon, IP_RANGE: ServerIcon, REPO: GitIcon };
+// OWNED first — the self-owned escape hatch (your own suite). Proof methods are verified live by the server.
+const METHODS = ['OWNED', 'CHECKBOX', 'TYPED_CONFIRMATION', 'DNS_TXT', 'FILE_DROP', 'HTTP_HEADER'];
+const PROOF_METHODS = ['DNS_TXT', 'FILE_DROP', 'HTTP_HEADER'];
+const METHOD_LABEL = {
+  OWNED: 'Owned', CHECKBOX: 'Checkbox', TYPED_CONFIRMATION: 'Typed',
+  DNS_TXT: 'DNS TXT', FILE_DROP: 'File drop', HTTP_HEADER: 'HTTP header',
 };
-function AttestBadge({ value }) {
-  return <span className="badge" style={{ background: ATTEST_COLORS[value] || '#475569' }}>{value}</span>;
+
+function KindIcon({ kind, ...rest }) {
+  const Icon = KIND_ICON[kind] || TargetIcon;
+  return <Icon {...rest} />;
 }
 
-export default function Targets() {
-  const [items, setItems] = React.useState([]);
-  const [loading, setLoading] = React.useState(true);
-  const [error, setError] = React.useState(null);
-
-  // register form
+/* ------------------------------------------------------------------ Register */
+function RegisterDrawer({ onClose, onCreated }) {
+  const toast = useToast();
   const [kind, setKind] = React.useState('DOMAIN');
   const [value, setValue] = React.useState('');
   const [label, setLabel] = React.useState('');
   const [owner, setOwner] = React.useState('');
-  const [registering, setRegistering] = React.useState(false);
-  const [regMsg, setRegMsg] = React.useState(null);
+  const { run, busy, error } = useMutation();
 
-  // attest panel (opened for a specific target)
-  const [attestId, setAttestId] = React.useState(null);
-  const [method, setMethod] = React.useState('OWNED');
-  const [checkboxAck, setCheckboxAck] = React.useState(false);
-  const [typedConfirmation, setTypedConfirmation] = React.useState('');
-  const [evidenceText, setEvidenceText] = React.useState('');
-  const [expiresAt, setExpiresAt] = React.useState('');
-  const [attesting, setAttesting] = React.useState(false);
-  const [attestMsg, setAttestMsg] = React.useState(null);
-
-  async function load() {
-    setLoading(true); setError(null);
-    try {
-      const page = await apiFetch('/targets?limit=200&offset=0');
-      setItems(page.items || []);
-    } catch (e) { setError(e); }
-    finally { setLoading(false); }
-  }
-  React.useEffect(() => { load(); }, []);
-
-  async function submitRegister(e) {
+  async function submit(e) {
     e.preventDefault();
-    setRegistering(true); setRegMsg(null);
-    try {
-      const created = await apiFetch('/targets', {
-        method: 'POST',
-        body: {
-          kind,
-          value: value.trim(),
-          label: label.trim() || null,
-          owner_principal: owner.trim() || null,
-        },
-      });
-      setRegMsg({ ok: true, text: `Registered ${created.kind} ${created.value} (UNATTESTED — attest it below before it is scannable).` });
-      setValue(''); setLabel(''); setOwner('');
-      await load();
-    } catch (e) {
-      setRegMsg({ ok: false, text: `${e.code}: ${e.message}` });
-    } finally { setRegistering(false); }
-  }
-
-  function openAttest(t) {
-    setAttestId(t.id);
-    setMethod('OWNED');
-    setCheckboxAck(false);
-    setTypedConfirmation('');
-    setEvidenceText('');
-    setExpiresAt('');
-    setAttestMsg(null);
-  }
-
-  async function submitAttest(e) {
-    e.preventDefault();
-    setAttestMsg(null);
-    let evidence = null;
-    if (evidenceText.trim()) {
-      try { evidence = JSON.parse(evidenceText); }
-      catch { setAttestMsg({ ok: false, text: 'Evidence must be valid JSON (e.g. {"dns_txt":"strix-auth=..."}).' }); return; }
-    }
+    if (!value.trim()) return;
     const body = {
-      method,
-      checkbox_ack: checkboxAck,
-      typed_confirmation: typedConfirmation.trim() || null,
-      evidence,
+      kind, value: value.trim(),
+      label: label.trim() || undefined,
+      owner_principal: owner.trim() || undefined,
     };
-    if (expiresAt) body.expires_at = new Date(expiresAt).toISOString();
-
-    setAttesting(true);
     try {
-      await apiFetch(`/targets/${attestId}/attest`, { method: 'POST', body });
-      setAttestId(null);
-      await load();
-    } catch (e) {
-      setAttestMsg({ ok: false, text: `${e.code}: ${e.message}` });
-    } finally { setAttesting(false); }
+      const created = await run('/targets', { method: 'POST', body });
+      toast({ title: `Registered ${created.kind} ${created.value}`, detail: 'UNATTESTED — attest it before it becomes scannable.' });
+      onCreated();
+    } catch { /* surfaced inline */ }
   }
-
-  const attestTarget = items.find((t) => t.id === attestId) || null;
 
   return (
-    <div>
-      <h1>Authorized targets</h1>
-      <p className="muted">The registry the gate consults. A target is only scannable once it passes attestation (valid, unexpired, not revoked). External domains/URLs/IP-ranges need ownership proof; self-owned assets use method OWNED.</p>
+    <Drawer title="Register target" subtitle="Adds an UNATTESTED entry to the registry"
+      onClose={onClose}
+      footer={<>
+        <button className="btn btn--ghost" onClick={onClose}>Cancel</button>
+        <button className="btn btn--primary" form="target-form" disabled={busy || !value.trim()}>{busy ? 'Registering…' : 'Register'}</button>
+      </>}>
+      <ErrorBanner error={error} />
+      <Banner kind="info">Registering only records the asset. It stays <b>unscannable</b> until you attest it and it sits in an active engagement.</Banner>
+      <form id="target-form" onSubmit={submit} className="stack">
+        <div className="grid grid-2">
+          <div className="field">
+            <label className="label">Kind</label>
+            <select className="select" value={kind} onChange={(e) => setKind(e.target.value)}>
+              {KINDS.map((k) => <option key={k}>{k}</option>)}
+            </select>
+          </div>
+          <div className="field">
+            <label className="label">Owner principal</label>
+            <input className="input" value={owner} onChange={(e) => setOwner(e.target.value)} placeholder="demo@example.invalid" />
+          </div>
+        </div>
+        <div className="field">
+          <label className="label">Value</label>
+          <input className="input mono" autoFocus value={value} onChange={(e) => setValue(e.target.value)}
+            placeholder="brigade.unicorncommander.ai · https://app… · 10.0.0.0/24 · repo url" />
+          <span className="hint">Domain, URL, CIDR range, or repository — matched against engagement scope.</span>
+        </div>
+        <div className="field">
+          <label className="label">Label</label>
+          <input className="input" value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Own suite — Brigade" />
+        </div>
+      </form>
+    </Drawer>
+  );
+}
 
-      {error && <div className="error">{error.code}: {error.message}</div>}
+/* -------------------------------------------------------------- Proof block */
+function ProofRow({ label, value }) {
+  return (
+    <div className="field" style={{ gap: 4 }}>
+      <label className="label">{label}</label>
+      <div className="codebox">
+        <div className="code" style={{ paddingRight: 44, wordBreak: 'break-all' }}>{value}</div>
+        <div className="copy"><CopyButton text={value} /></div>
+      </div>
+    </div>
+  );
+}
 
-      {/* Register */}
-      <div className="card">
-        <h2>Register target</h2>
-        {regMsg && <div className={regMsg.ok ? 'success' : 'error'}>{regMsg.text}</div>}
-        <form onSubmit={submitRegister}>
-          <div className="grid2">
-            <div className="field">
-              <label className="label">Kind</label>
-              <select className="select" value={kind} onChange={(e) => setKind(e.target.value)}>
-                {TARGET_KINDS.map((k) => <option key={k} value={k}>{k}</option>)}
-              </select>
-            </div>
-            <div className="field">
-              <label className="label">Value</label>
-              <input className="input" required value={value} onChange={(e) => setValue(e.target.value)} placeholder="brigade.unicorncommander.ai / https://… / 10.0.0.0/24 / repo url" />
+function ProofBlock({ method, challenge, loading, error }) {
+  if (loading) return <div className="hint" style={{ padding: '4px 0' }}>Loading proof instructions…</div>;
+  if (error) return <ErrorBanner error={error} />;
+  if (!challenge) return null;
+  const spec = challenge.methods?.[method];
+  if (!spec) return <div className="hint">No instructions available for this method.</div>;
+
+  return (
+    <div className="card" style={{ background: 'var(--surface-inset)' }}>
+      <div className="card__head"><KeyIcon size={15} style={{ color: 'var(--accent-strong)' }} /><h2>Publish this proof</h2></div>
+      <div className="card__body stack" style={{ gap: 'var(--s-4)' }}>
+        <p className="hint" style={{ margin: 0 }}>{spec.how || 'Publish the record below, then attest — the server verifies it live.'}</p>
+        <ProofRow label="Authorization token" value={challenge.token} />
+        {method === 'DNS_TXT' && (<>
+          <div className="grid grid-2">
+            <ProofRow label={`Record type`} value={spec.record_type || 'TXT'} />
+            <ProofRow label="Record name" value={spec.name} />
+          </div>
+          <ProofRow label="Record value" value={spec.value} />
+        </>)}
+        {method === 'FILE_DROP' && (<>
+          <ProofRow label="Well-known URL" value={spec.url} />
+          <ProofRow label="File body" value={spec.body} />
+        </>)}
+        {method === 'HTTP_HEADER' && (<>
+          <ProofRow label="Request URL" value={spec.url} />
+          <div className="grid grid-2">
+            <ProofRow label="Header" value={spec.header} />
+            <ProofRow label="Header value" value={spec.value} />
+          </div>
+        </>)}
+      </div>
+    </div>
+  );
+}
+
+/* --------------------------------------------------------------- Attest */
+function AttestDrawer({ target, onClose, onAttested }) {
+  const toast = useToast();
+  const [method, setMethod] = React.useState(target.attestation_method || 'OWNED');
+  const [ack, setAck] = React.useState(false);
+  const [typed, setTyped] = React.useState('');
+  const [expiresAt, setExpiresAt] = React.useState('');
+  const { run, busy, error } = useMutation();
+
+  const isProof = PROOF_METHODS.includes(method);
+  const isTyped = method === 'TYPED_CONFIRMATION';
+
+  // Lazily fetch the per-target challenge the first time a proof method is picked.
+  const [challenge, setChallenge] = React.useState(null);
+  const [chLoading, setChLoading] = React.useState(false);
+  const [chError, setChError] = React.useState(null);
+  React.useEffect(() => {
+    if (!isProof || challenge || chLoading) return undefined;
+    let live = true;
+    setChLoading(true); setChError(null);
+    api(`/targets/${target.id}/attestation-challenge`)
+      .then((c) => { if (live) setChallenge(c); })
+      .catch((e) => { if (live) setChError(e); })
+      .finally(() => { if (live) setChLoading(false); });
+    return () => { live = false; };
+  }, [isProof, challenge, chLoading, target.id]);
+
+  const typedOk = !isTyped || typed.trim() === target.value;
+  const canSubmit = ack && typedOk && !busy;
+
+  async function submit(e) {
+    e.preventDefault();
+    if (!canSubmit) return;
+    const body = { method, checkbox_ack: ack };
+    if (typed.trim()) body.typed_confirmation = typed.trim();
+    if (expiresAt) body.expires_at = new Date(expiresAt).toISOString();
+    try {
+      await run(`/targets/${target.id}/attest`, { method: 'POST', body });
+      toast({ title: 'Target attested', detail: `${target.value} is now scannable within an active engagement.` });
+      onAttested();
+    } catch { /* surfaced inline */ }
+  }
+
+  const KIcon = KIND_ICON[target.kind] || TargetIcon;
+  return (
+    <Drawer title="Attest target" subtitle={target.id} onClose={onClose}
+      footer={<>
+        <button className="btn btn--ghost" onClick={onClose}>Cancel</button>
+        <button className="btn btn--primary" form="attest-form" disabled={!canSubmit}><LockIcon size={14} />{busy ? 'Attesting…' : 'Attest target'}</button>
+      </>}>
+      <ErrorBanner error={error} />
+
+      {/* Target identity */}
+      <div className="card" style={{ background: 'var(--surface-inset)' }}>
+        <div className="card__body row" style={{ gap: 'var(--s-3)' }}>
+          <div className="empty__icon" style={{ margin: 0, width: 38, height: 38, borderRadius: 11 }}><KIcon size={18} /></div>
+          <div className="grow">
+            <div className="mono" style={{ fontSize: 13, wordBreak: 'break-all' }}>{target.value}</div>
+            <div className="row-tight" style={{ marginTop: 5 }}>
+              <span className="chip">{target.kind}</span>
+              <StatusBadge value={target.attestation_status} />
+              {target.label && <span className="muted" style={{ fontSize: 12 }}>{target.label}</span>}
             </div>
           </div>
-          <div className="grid2">
-            <div className="field">
-              <label className="label">Label (optional)</label>
-              <input className="input" value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Own suite — Brigade" />
-            </div>
-            <div className="field">
-              <label className="label">Owner principal (optional)</label>
-              <input className="input" value={owner} onChange={(e) => setOwner(e.target.value)} placeholder="demo@example.invalid" />
-            </div>
-          </div>
-          <button className="btn" disabled={registering}>{registering ? 'Registering…' : 'Register target'}</button>
-        </form>
+        </div>
       </div>
 
-      {/* Attest panel */}
-      {attestTarget && (
-        <div className="card">
-          <h2>Attest — <span className="mono">{attestTarget.kind}: {attestTarget.value}</span></h2>
-          <p className="muted">
-            Minimum proof: acknowledge + typed confirmation. External DOMAIN/URL/IP_RANGE additionally require
-            DNS_TXT / FILE_DROP / HTTP_HEADER evidence. Method OWNED is for assets you own (the pilot).
-          </p>
-          {attestMsg && <div className={attestMsg.ok ? 'success' : 'error'}>{attestMsg.text}</div>}
-          <form onSubmit={submitAttest}>
-            <div className="grid2">
-              <div className="field">
-                <label className="label">Method</label>
-                <select className="select" value={method} onChange={(e) => setMethod(e.target.value)}>
-                  {ATTEST_METHODS.map((m) => <option key={m} value={m}>{m}</option>)}
-                </select>
-              </div>
-              <div className="field">
-                <label className="label">Expires at (optional)</label>
-                <input className="input" type="datetime-local" value={expiresAt} onChange={(e) => setExpiresAt(e.target.value)} />
-              </div>
-            </div>
-            <div className="field">
-              <label className="row" style={{ gap: 8, cursor: 'pointer' }}>
-                <input type="checkbox" style={{ width: 'auto' }} checked={checkboxAck} onChange={(e) => setCheckboxAck(e.target.checked)} />
-                <span>I am authorized to test this target (checkbox_ack)</span>
-              </label>
-            </div>
-            <div className="field">
-              <label className="label">Typed confirmation</label>
-              <input className="input" value={typedConfirmation} onChange={(e) => setTypedConfirmation(e.target.value)} placeholder={`type the target value to confirm: ${attestTarget.value}`} />
-            </div>
-            <div className="field">
-              <label className="label">Evidence (JSON — required for external DNS_TXT / FILE_DROP / HTTP_HEADER)</label>
-              <textarea value={evidenceText} onChange={(e) => setEvidenceText(e.target.value)} placeholder='{"dns_txt": "strix-authorization=abc123"}' />
-            </div>
-            <div className="row">
-              <button className="btn" disabled={attesting}>{attesting ? 'Attesting…' : 'Attest target'}</button>
-              <button type="button" className="btn btn-ghost" onClick={() => setAttestId(null)}>Cancel</button>
-            </div>
-          </form>
+      <form id="attest-form" onSubmit={submit} className="stack">
+        <div className="field">
+          <label className="label">Attestation method</label>
+          <select className="select" value={method} onChange={(e) => setMethod(e.target.value)}>
+            {METHODS.map((m) => <option key={m} value={m}>{METHOD_LABEL[m]} — {m}</option>)}
+          </select>
+          <span className="hint">
+            {isProof
+              ? 'External asset — publish the proof below, then attest. The server verifies ownership live.'
+              : 'Self-owned attestation — acknowledge authorization to record it.'}
+          </span>
         </div>
-      )}
 
-      {/* List */}
-      <div className="card">
-        <h2>Registry</h2>
-        {loading ? (
-          <div className="empty">Loading…</div>
-        ) : items.length === 0 ? (
-          <div className="empty">No targets registered yet.</div>
-        ) : (
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Kind</th><th>Value</th><th>Attestation</th><th>Method</th><th>Attested by</th><th>Expires</th><th>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {items.map((t) => (
-                  <tr key={t.id}>
-                    <td>{t.kind}</td>
-                    <td>
-                      <div className="mono">{t.value}</div>
-                      {t.label && <div className="muted" style={{ fontSize: 12 }}>{t.label}</div>}
-                    </td>
-                    <td><AttestBadge value={t.attestation_status} /></td>
-                    <td className="mono">{t.attestation_method || '—'}</td>
-                    <td className="muted">{t.attested_by || '—'}</td>
-                    <td className="muted">{fmt(t.expires_at)}</td>
-                    <td>
-                      <button className="btn btn-sm" onClick={() => openAttest(t)}>
-                        {t.attestation_status === 'ATTESTED' ? 'Re-attest' : 'Attest'}
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+        {isProof && <ProofBlock method={method} challenge={challenge} loading={chLoading} error={chError} />}
+
+        {isTyped && (
+          <div className="field">
+            <label className="label">Typed confirmation</label>
+            <input className="input mono" value={typed} onChange={(e) => setTyped(e.target.value)} placeholder={target.value} />
+            {typed && !typedOk && <span className="hint" style={{ color: 'var(--danger-strong)' }}>Must match the target value exactly.</span>}
           </div>
         )}
+
+        <label className="checkbox">
+          <input type="checkbox" checked={ack} onChange={(e) => setAck(e.target.checked)} />
+          <span className="box"><CheckIcon /></span>
+          <span>I am authorized to test <span className="mono">{target.value}</span> and accept responsibility for scans against it.</span>
+        </label>
+
+        <div className="field">
+          <label className="label">Expires at <span className="muted" style={{ textTransform: 'none', letterSpacing: 0 }}>· optional</span></label>
+          <input className="input" type="datetime-local" value={expiresAt} onChange={(e) => setExpiresAt(e.target.value)} />
+          <span className="hint">Leave blank for no expiry. Attestations lapse to EXPIRED after this time.</span>
+        </div>
+      </form>
+    </Drawer>
+  );
+}
+
+/* --------------------------------------------------------------- Page */
+export default function Targets() {
+  const { data, loading, error, reload } = useResource(() => api('/targets?limit=200'), []);
+  const [registering, setRegistering] = React.useState(false);
+  const [selected, setSelected] = React.useState(null);
+  const items = data?.items || [];
+  const attested = items.filter((t) => t.attestation_status === 'ATTESTED').length;
+
+  return (
+    <div className="page">
+      <PageHead title="Authorized targets"
+        subtitle="The registry the authorization gate consults. A target is only scannable once it passes attestation — valid, unexpired, and not revoked. External domains, URLs and IP ranges need ownership proof; self-owned assets use OWNED."
+        actions={<button className="btn btn--primary" onClick={() => setRegistering(true)}><PlusIcon size={15} />Register target</button>} />
+
+      <ErrorBanner error={error} />
+
+      <div className="card">
+        <div className="card__head">
+          <TargetIcon size={16} style={{ color: 'var(--muted)' }} /><h2>Registry</h2>
+          <div className="spacer" />
+          <span className="muted" style={{ fontSize: 12 }}>{attested} attested · {items.length} total</span>
+        </div>
+        {loading ? <SkeletonRows rows={5} cols={5} /> : items.length === 0 ? (
+          <div className="card__body">
+            <EmptyState icon={<TargetIcon />} title="No targets registered">
+              <p className="muted">Register an asset, prove you own it, then it becomes scannable inside an active engagement.</p>
+            </EmptyState>
+          </div>
+        ) : (
+          <div className="tablewrap"><table className="tbl tbl--rows">
+            <thead><tr><th>Target</th><th>Attestation</th><th>Method</th><th>Attested by</th><th>Expires</th><th></th></tr></thead>
+            <tbody>
+              {items.map((t) => (
+                <tr key={t.id} {...rowActivate(() => setSelected(t), `Attest or view target ${t.value}`)}>
+                  <td>
+                    <div className="row-tight">
+                      <KindIcon kind={t.kind} size={15} style={{ color: 'var(--faint)', flex: 'none' }} />
+                      <span className="mono" style={{ wordBreak: 'break-all' }}>{t.value}</span>
+                    </div>
+                    <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>{t.label || t.kind}</div>
+                  </td>
+                  <td><StatusBadge value={t.attestation_status} /></td>
+                  <td className="mono muted" style={{ fontSize: 12 }}>{t.attestation_method || '—'}</td>
+                  <td className="muted" style={{ fontSize: 12 }}>{t.attested_by || '—'}</td>
+                  <td className="muted" style={{ fontSize: 12 }}>
+                    {t.expires_at
+                      ? <span className="row-tight"><ClockIcon size={13} style={{ color: 'var(--faint)' }} />{fmtDate(t.expires_at, { time: false })}</span>
+                      : '—'}
+                  </td>
+                  <td className="col-actions"><ChevronRightIcon size={16} style={{ color: 'var(--faint)' }} /></td>
+                </tr>
+              ))}
+            </tbody>
+          </table></div>
+        )}
       </div>
+
+      {registering && <RegisterDrawer onClose={() => setRegistering(false)} onCreated={() => { setRegistering(false); reload(); }} />}
+      {selected && <AttestDrawer target={selected} onClose={() => setSelected(null)} onAttested={() => { setSelected(null); reload(); }} />}
     </div>
   );
 }
