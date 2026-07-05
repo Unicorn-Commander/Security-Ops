@@ -26,3 +26,6 @@ strix_runs/
 .DS_Store
 .idea/
 .vscode/
+
+# bigboy deploy secrets
+deploy/bigboy/.env.bigboy

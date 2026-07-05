@@ -240,20 +240,46 @@ def _collect_roles(claims: dict) -> list[str]:
     return ordered
 
 
-def _derive_apps(roles: list[str]) -> list[str]:
-    """Suite convention: entitlement slugs come from ``app-<slug>`` realm roles."""
+def _derive_apps(roles: list[str], claims: dict | None = None) -> list[str]:
+    """Resolve the principal's entitlement slugs from BOTH suite mechanisms:
+
+    * ``app-<slug>`` realm roles (this app's original convention), and
+    * the suite-wide ``entitlements`` claim — a multivalued SKU array produced by
+      the ``uc-identity`` client scope (see the ecosystem SSO docs). Either grant
+      admits the user, so Security-Ops interoperates with the suite's canonical
+      entitlement pipeline without requiring a per-app realm role.
+    """
     apps: list[str] = []
     seen: set[str] = set()
+
+    def _add(slug: str) -> None:
+        if slug and slug not in seen:
+            seen.add(slug)
+            apps.append(slug)
+
     for role in roles:
         if role.startswith("app-"):
-            slug = role[len("app-") :]
-            if slug and slug not in seen:
-                seen.add(slug)
-                apps.append(slug)
+            _add(role[len("app-") :])
+
+    ent = (claims or {}).get("entitlements")
+    if isinstance(ent, str):
+        ent = [ent]
+    if isinstance(ent, list):
+        for sku in ent:
+            if isinstance(sku, str):
+                _add(sku.strip())
     return apps
 
 
 def _derive_org_slug(claims: dict) -> str | None:
+    """Resolve the caller's tenant key from the token.
+
+    Precedence: an explicit ``org_slug``-style claim, then a ``/orgs/<slug>``
+    Keycloak group, then the suite's workspace id claim (``workspace_id`` /
+    ``active_workspace_id`` from the ``uc-identity`` scope) — so a tenant can be
+    keyed either by a human slug or by the canonical workspace UUID, and the
+    provisioned ``Organization.slug`` matches whichever the realm emits.
+    """
     for key in ("org_slug", "organization", "org", "orgSlug"):
         value = claims.get(key)
         if isinstance(value, str) and value:
@@ -265,6 +291,12 @@ def _derive_org_slug(claims: dict) -> str | None:
                 slug = group[len("/orgs/") :].strip("/")
                 if slug:
                     return slug
+    for key in ("workspace_id", "active_workspace_id"):
+        value = claims.get(key)
+        if isinstance(value, list) and value:
+            value = value[0]
+        if isinstance(value, str) and value:
+            return value
     return None
 
 
@@ -288,7 +320,7 @@ def principal_from_claims(claims: dict, *, auth_source: str = "keycloak") -> Aut
         email=claims.get("email"),
         role=map_keycloak_roles(roles),
         org_slug=_derive_org_slug(claims),
-        apps=_derive_apps(roles),
+        apps=_derive_apps(roles, claims),
         attrs=attrs,
         auth_source=auth_source,
     )
