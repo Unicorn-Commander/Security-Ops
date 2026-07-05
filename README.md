@@ -162,10 +162,20 @@ in **two independent layers**:
    the session GUC `app.current_org_id`. `get_current_org` binds that GUC once per
    request (`set_org_context`); the detached Strix worker binds it from the run's
    `org_id`; `get_session` clears it on teardown so a pooled connection never leaks
-   context. **Fail-closed:** with no GUC the predicate `org_id = NULL` is never true,
-   so zero rows are visible or writable. `organizations` is intentionally unpoliced
-   (the slug lookup bootstraps the GUC); `audit_events` allows NULL-`org_id` system
-   rows to be appended but still restricts *reads* to the caller's org.
+   context. Because a `Session` releases its connection on every `commit()` (and
+   services commit mid-request), each request/worker is **pinned to one checked-out
+   connection** so the GUC applies to every statement across those commits —
+   otherwise a later query could hop to a GUC-less pooled connection and RLS would
+   silently return zero rows. **Fail-closed:** with no GUC the predicate
+   `org_id = NULL` is never true, so zero rows are visible or writable.
+   `organizations` is intentionally unpoliced (the slug lookup bootstraps the GUC);
+   `audit_events` allows NULL-`org_id` system rows to be appended but still
+   restricts *reads* to the caller's org.
+
+   Verified live against Postgres 16 as a non-superuser owner role: per-table
+   isolation both directions, `WITH CHECK` rejecting a cross-org insert, fail-closed
+   zero-rows with no context, the GUC surviving mid-request commits, and pinning
+   holding under a multi-connection pool with concurrent tenants.
 
 > **⚠️ GA activation step — the runtime DB role must NOT be a superuser or hold
 > `BYPASSRLS`.** RLS (even `FORCE`d) is bypassed by superusers, and the stock

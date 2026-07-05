@@ -71,19 +71,34 @@ async def get_session() -> AsyncIterator[AsyncSession]:
 
     The caller (route/service) owns commits; nothing here commits implicitly.
 
-    RLS teardown: on Postgres the request may have bound its connection to a
-    tenant via the session-level ``app.current_org_id`` GUC (see ``app.db.rls``).
-    The ``finally`` block resets it before the connection returns to the pool so
-    no later request can inherit another tenant's context. The reset sequence is
-    rollback → clear → commit: the rollback discards any uncommitted caller work
-    (exactly what ``session.close()`` would have done, so semantics are
-    unchanged) and ensures the follow-up commit persists ONLY the GUC reset —
-    necessary because a session-level ``set_config`` is itself transactional and
-    would be reverted if its enclosing transaction rolled back at close. The
-    whole reset is wrapped so a teardown failure can never mask the request's
-    real exception; ``app.db.rls`` is imported lazily to avoid an import cycle.
+    **RLS connection pinning (Postgres).** Tenant isolation binds the session-level
+    GUC ``app.current_org_id`` to the connection (set by ``get_current_org`` via
+    ``app.db.rls.set_org_context``). But a plain ``Session`` releases its connection
+    back to the pool on every ``commit()`` — and services commit mid-request — so a
+    later query could land on a *different* pooled connection that never received
+    the ``SET``, and RLS would then silently return ZERO rows (or, worse, a stale
+    tenant's). To close that window the whole request is pinned to ONE checked-out
+    connection: the GUC therefore applies to every statement across all
+    intra-request commits. On teardown the GUC is reset (rollback → clear → commit)
+    before the connection returns to the pool so no later request inherits the
+    context. Non-Postgres backends (the sqlite unit-test DB) have no RLS and take
+    the simple unpinned path. ``app.db.rls`` is imported lazily to avoid a cycle.
     """
-    async with get_sessionmaker()() as session:
+    engine = get_engine()
+    if engine.dialect.name != "postgresql":
+        async with get_sessionmaker()() as session:
+            try:
+                yield session
+            except Exception:
+                await session.rollback()
+                raise
+        return
+
+    from app.db.rls import clear_org_context  # lazy: avoid import cycle
+
+    # Pin one connection for the request so the org GUC survives mid-request commits.
+    async with engine.connect() as conn:
+        session = get_sessionmaker()(bind=conn)
         try:
             yield session
         except Exception:
@@ -91,14 +106,16 @@ async def get_session() -> AsyncIterator[AsyncSession]:
             raise
         finally:
             try:
-                from app.db.rls import clear_org_context, is_postgres_session
-
-                if is_postgres_session(session):
-                    await session.rollback()
-                    await clear_org_context(session)
-                    await session.commit()
+                # rollback → clear → commit: discard any uncommitted caller work,
+                # then persist ONLY the GUC reset (a session-level set_config is
+                # itself transactional and would revert on a bare close()).
+                await session.rollback()
+                await clear_org_context(session)
+                await session.commit()
             except Exception:  # pragma: no cover — best-effort teardown only
                 pass
+            finally:
+                await session.close()
 
 
 async def init_db() -> None:

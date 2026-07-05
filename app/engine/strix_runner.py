@@ -945,9 +945,21 @@ async def execute_run(
     invisible/unwritable to this connection (fail-closed). The context is cleared
     on exit so the pooled connection carries no tenant state to its next borrower.
     """
+    from app.db.session import get_engine  # lazy: avoid import weight at module load
     from app.db.rls import clear_org_context, set_org_context  # lazy: avoid cycle
 
-    async with get_sessionmaker()() as session:
+    engine = get_engine()
+    # On Postgres the org GUC must survive the several commits execute() performs,
+    # so pin ONE connection for the whole run (a released connection could be
+    # replaced by a GUC-less one from the pool -> RLS would hide/reject the run's
+    # own rows). Off Postgres (sqlite) there is no RLS; use the simple path.
+    is_pg = engine.dialect.name == "postgresql"
+    if is_pg:
+        conn_ctx = engine.connect()
+    else:
+        conn_ctx = None
+
+    async def _run(session: AsyncSession) -> Run:
         if org_id is not None:
             await set_org_context(session, org_id)
         try:
@@ -967,12 +979,23 @@ async def execute_run(
                 diff_base=diff_base,
             )
         finally:
-            if org_id is not None:
+            if org_id is not None and is_pg:
                 try:
                     await clear_org_context(session)
                     await session.commit()
                 except Exception:  # noqa: BLE001 - teardown must not mask the run result
                     log.warning("strix.execute: failed to clear org context", exc_info=True)
+
+    if conn_ctx is not None:
+        async with conn_ctx as conn:
+            session = get_sessionmaker()(bind=conn)
+            try:
+                return await _run(session)
+            finally:
+                await session.close()
+    else:
+        async with get_sessionmaker()() as session:
+            return await _run(session)
 
 
 def launch_run_background(
