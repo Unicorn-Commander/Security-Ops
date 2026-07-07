@@ -52,6 +52,7 @@ KIND_DOMAIN = "DOMAIN"
 KIND_URL = "URL"
 KIND_IP_RANGE = "IP_RANGE"
 KIND_REPO = "REPO"
+KIND_IMAGE = "IMAGE"
 
 _DEFAULT_PORTS: dict[str, int] = {
     "http": 80,
@@ -93,7 +94,22 @@ _KIND_ALIASES: dict[str, str] = {
     "REPO": KIND_REPO,
     "REPOSITORY": KIND_REPO,
     "GIT": KIND_REPO,
+    "IMAGE": KIND_IMAGE,
+    "CONTAINER": KIND_IMAGE,
+    "DOCKER": KIND_IMAGE,
+    "OCI": KIND_IMAGE,
+    "IMG": KIND_IMAGE,
 }
+
+# Container-image reference grammar (Docker / OCI), used only for IMAGE targets.
+# A repository is one or more lowercase path components; a tag is a short
+# case-sensitive label; a digest is ``<algorithm>:<hex>`` (>=32 hex, sha256=64).
+_IMAGE_NAME_COMPONENT = r"[a-z0-9]+(?:(?:[._]|__|[-]+)[a-z0-9]+)*"
+_REPO_RE = re.compile(rf"^{_IMAGE_NAME_COMPONENT}(?:/{_IMAGE_NAME_COMPONENT})*$")
+_TAG_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$")
+_DIGEST_RE = re.compile(r"^[a-z0-9]+(?:[.+_-][a-z0-9]+)*:[0-9a-fA-F]{32,}$")
+# Canonical default registry for un-qualified Docker Hub references.
+_DEFAULT_REGISTRY = "docker.io"
 
 
 # ---------------------------------------------------------------------------
@@ -147,8 +163,11 @@ def normalize_target(raw: str) -> NormalizedTarget:
     """Parse ``raw`` into a canonical :class:`NormalizedTarget`.
 
     Detection order: explicit repo syntax (``git@`` / ``ssh://`` / ``git://`` /
-    ``.git``) -> explicit URL (``scheme://``) -> bare IP / CIDR -> bare
-    authority[/path]. Raises :class:`ValueError` for empty or unparseable input.
+    ``.git``) -> UNAMBIGUOUS container image (digest ref, or registry-qualified
+    ``registry/name:tag``) -> explicit URL (``scheme://``) -> bare IP / CIDR ->
+    bare authority[/path]. Image detection is deliberately conservative (see
+    :func:`_is_image_syntax`) so no input that parses as DOMAIN/URL/IP/REPO today
+    is reclassified. Raises :class:`ValueError` for empty or unparseable input.
     """
     if raw is None:
         raise ValueError("target is empty")
@@ -158,6 +177,8 @@ def normalize_target(raw: str) -> NormalizedTarget:
 
     if _is_repo_syntax(s):
         return _norm_repo(s)
+    if _is_image_syntax(s):
+        return _norm_image(s)
     if "://" in s:
         return _norm_url(s)
     net = _as_ip_network(s)
@@ -241,6 +262,135 @@ def _repo_host_path(s: str) -> tuple[str, str]:
     if path.lower().endswith(".git"):
         path = path[:-4]
     return host, path.strip("/").lower()
+
+
+# ---------------------------------------------------------------------------
+# Container images (Docker / OCI references)
+# ---------------------------------------------------------------------------
+def _looks_like_registry(component: str) -> bool:
+    """Docker's registry heuristic: the leading path component is the registry
+    iff it contains a ``.`` (domain) or ``:`` (port) or is exactly ``localhost``.
+    Otherwise it is part of the repository path (an implicit ``docker.io`` image)."""
+    return "." in component or ":" in component or component.lower() == "localhost"
+
+
+def _split_registry(body: str) -> tuple[str, str]:
+    """Split ``registry/remainder`` per the Docker heuristic, defaulting the
+    registry to ``docker.io`` when the leading component isn't registry-shaped.
+    Returns ``(registry_lowercased, remainder)``."""
+    first, slash, rest = body.partition("/")
+    if slash and _looks_like_registry(first):
+        return first.lower(), rest
+    return _DEFAULT_REGISTRY, body
+
+
+def _parse_image(s: str) -> tuple[str, str, str, str]:
+    """Parse ``[registry[:port]/]repository[:tag][@digest]`` into
+    ``(registry, repository, tag, digest)``. Registry + repository are lowercased
+    (OCI repositories are lowercase by spec); tag case is preserved. Applies the
+    ``library/`` namespace default for single-segment Docker Hub images. Raises
+    :class:`ValueError` for anything not shaped like an image reference."""
+    s = s.strip()
+    if not s or "://" in s:
+        raise ValueError(f"not an image reference: {s!r}")
+
+    body, sep, digest = s.partition("@")
+    digest = digest.strip()
+    if sep:
+        if not _DIGEST_RE.match(digest):
+            raise ValueError(f"invalid image digest: {s!r}")
+    else:
+        digest = ""
+
+    registry, remainder = _split_registry(body)
+    remainder = remainder.strip("/")
+    if not remainder:
+        raise ValueError(f"image has no repository: {s!r}")
+
+    # A tag colon lives only in the final path segment (registry:port is already split off).
+    tag = ""
+    slash_idx = remainder.rfind("/")
+    last_seg = remainder[slash_idx + 1:]
+    if ":" in last_seg:
+        name_seg, _, tag = last_seg.rpartition(":")
+        if not name_seg or not tag:
+            raise ValueError(f"invalid image tag: {s!r}")
+        remainder = remainder[: slash_idx + 1] + name_seg
+
+    repository = remainder.strip("/").lower()
+    if registry == _DEFAULT_REGISTRY and "/" not in repository:
+        repository = "library/" + repository  # docker.io single-name default namespace
+    if not _REPO_RE.match(repository):
+        raise ValueError(f"invalid image repository: {s!r}")
+    if tag and not _TAG_RE.match(tag):
+        raise ValueError(f"invalid image tag: {s!r}")
+    return registry, repository, tag, digest.lower()
+
+
+def _has_explicit_registry(s: str) -> bool:
+    """Whether ``s`` names a registry explicitly (leading registry-shaped
+    component followed by ``/``), as opposed to a bare Docker Hub name."""
+    body = s.partition("@")[0]
+    first, slash, _rest = body.partition("/")
+    return bool(slash) and _looks_like_registry(first)
+
+
+def _is_image_syntax(s: str) -> bool:
+    """UNAMBIGUOUS image detection only — conservative by design so existing
+    DOMAIN/URL/IP_RANGE/REPO detection is never disturbed. An input is treated as
+    an image only when it (a) carries a content digest (``@sha256:...``), which no
+    other target kind uses, or (b) is fully registry-qualified (``registry[/ns]/name``)
+    AND pins an explicit ``:tag``. A bare ``name`` or ``name:tag`` (ambiguous with
+    ``host:port``) and a registry-qualified path WITHOUT a tag/digest (ambiguous
+    with a URL/REPO path) are deliberately NOT classified here — coverage still
+    re-derives image identity from the raw string when a container is IMAGE."""
+    if "://" in s:
+        return False
+    try:
+        _registry, _repository, tag, digest = _parse_image(s)
+    except ValueError:
+        return False
+    if digest:
+        return True
+    return bool(tag) and _has_explicit_registry(s)
+
+
+def _norm_image(s: str) -> NormalizedTarget:
+    """Normalize a container-image reference. ``value`` is the canonical
+    ``registry/repository[:tag][@digest]``; ``host`` is the registry and ``path``
+    is the (tag/digest-stripped) repository, so coverage can compare identity
+    without the version pin."""
+    registry, repository, tag, digest = _parse_image(s)
+    value = f"{registry}/{repository}"
+    if tag:
+        value += f":{tag}"
+    if digest:
+        value += f"@{digest}"
+    return NormalizedTarget(raw=s, kind=KIND_IMAGE, value=value, host=registry, path=repository)
+
+
+def _image_identity(s: Any, *, allow_wildcard: bool) -> tuple[str, str, bool] | None:
+    """Re-derive ``(registry, repository, is_wildcard)`` from any string, kind-
+    agnostically (mirrors ``_repo_host_path`` for REPO). Repository is tag/digest-
+    stripped and lowercased. With ``allow_wildcard`` a trailing ``/*`` marks a
+    namespace/registry wildcard. Fail-safe: returns ``None`` on any parse failure."""
+    try:
+        if s is None:
+            return None
+        text = str(s).strip()
+        if not text or "://" in text:
+            return None
+        if allow_wildcard and text.rstrip("/").endswith("/*"):
+            base = text.rstrip("/")[:-2].rstrip("/")  # drop the trailing '/*'
+            registry, remainder = _split_registry(base)
+            repository = remainder.strip("/").lower()
+            if repository and not _REPO_RE.match(repository):
+                return None
+            return registry, repository, True  # repository may be "" => whole-registry wildcard
+        registry, repository, _tag, _digest = _parse_image(text)
+        return registry, repository, False
+    except Exception:
+        return None
 
 
 def _norm_path(p: str | None) -> str:
@@ -337,6 +487,8 @@ def target_covers(container_kind: Any, container_value: str, target: Any) -> boo
         return _ip_covers(container_value, nt)
     if ck == KIND_REPO:
         return _repo_covers(container_value, nt)
+    if ck == KIND_IMAGE:
+        return _image_covers(container_value, nt)
     return False
 
 
@@ -404,6 +556,38 @@ def _repo_covers(container_value: str, nt: NormalizedTarget) -> bool:
     if chost and thost and chost != thost:
         return False
     return cpath == tpath
+
+
+def _image_covers(container_value: str, nt: NormalizedTarget) -> bool:
+    """Whether an IMAGE authorization ``container_value`` covers ``nt``.
+
+    Both sides re-derive ``(registry, repository)`` kind-agnostically from their
+    raw strings (mirroring ``_repo_covers``), so a bare ``nginx`` target is covered
+    by a ``docker.io/library/nginx`` scope entry even if it normalized as DOMAIN.
+
+    Coverage is TAG-AGNOSTIC (repo-level), matching how REPO coverage ignores the
+    ref: an image authorization attests the *asset* (registry + repository) across
+    every version, so any ``:tag`` / ``@digest`` on either side is disregarded. A
+    trailing ``/*`` on the container repository extends coverage to a whole
+    namespace (``ghcr.io/acme/*`` covers ``ghcr.io/acme/api:1.0``). Fail-closed:
+    any parse failure yields ``False``."""
+    container = _image_identity(container_value, allow_wildcard=True)
+    if container is None:
+        return False
+    creg, crepo, wildcard = container
+
+    target = _image_identity(nt.raw, allow_wildcard=False)
+    if target is None:
+        return False
+    treg, trepo, _ = target
+
+    if creg != treg:
+        return False
+    if wildcard:
+        if crepo == "":  # whole-registry wildcard, e.g. "ghcr.io/*"
+            return True
+        return trepo == crepo or trepo.startswith(crepo + "/")
+    return crepo == trepo
 
 
 def _extract_host(container_value: str) -> str:
