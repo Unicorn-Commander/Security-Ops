@@ -15,8 +15,10 @@ Wiring follows spec §7 exactly:
     ``reasoning_effort`` (spec §7 gotcha).
   * CLI ``strix -n -m {quick|standard|deep} -t <target> --instruction-file <scope>``
     (optionally ``--scope-mode diff --diff-base <sha>``).
-  * Outputs land under ``settings.runs_dir/<run.id>/`` :
-    ``vulnerabilities.json`` , ``run.json`` (usage/cost), ``penetration_test_report.md`` .
+  * Outputs land under ``settings.runs_dir/<run.id>/strix_runs/<target>_<hash>/`` —
+    Strix NESTS them one level down, not directly in the run dir (see
+    :func:`_strix_output_dir`): ``vulnerabilities.json`` , ``run.json`` (own status +
+    usage/cost), ``penetration_test_report.md`` .
 
 Belt-and-suspenders only: the ``--instruction-file`` restates the scope to the
 engine, but the GATE is the authority (spec §4). This module NEVER trusts Strix to
@@ -121,17 +123,30 @@ class ModelProfile:
     verify: str
 
 
+# Sweep model = ``qwen3.6-35b-a3b`` — the gateway route to Qwen3.6-35B-A3B on
+# bigboy's RTX 3090 at a TRUE 131k window (``unicorn-llama-router``, --parallel 1).
+# PROVEN 2026-07-07 to drive Strix to completion and out-find gpt-5.4-mini on Juice
+# Shop (4 vulns, 2 CRITICAL) at zero cost. NOT ``strix-qwen3.6-35b`` — that route
+# points at the context-starved Strix Halo laptop, which loops to MaxTurnsExceeded.
+_LOCAL_SWEEP = "qwen3.6-35b-a3b"
+# Verify/fallback model = ``deepseek-v4-flash`` — PROVEN 2026-07-07 the strongest
+# Strix driver on Juice Shop (5 vulns, 4 CRITICAL, ~4min) AND far cheaper than
+# OpenAI. Used as the hybrid VERIFY model (cheap cloud second-opinion on free local
+# sweeps) and the cloud fallback sweep. ``gpt-5.4-mini`` kept as a premium alt.
+_CLOUD_VERIFY = "deepseek-v4-flash"
 MODEL_PROFILES: dict[str, ModelProfile] = {
-    # default: local Qwen sweep, big *local* Qwen verifier (try before paying cloud).
+    # default: free local 3090 sweep, cheap cloud verify (second opinion).
     "hybrid-local-sweep-verify": ModelProfile(
-        "hybrid-local-sweep-verify", "strix-qwen3.6-35b", "strix-qwen3.5-122b"
+        "hybrid-local-sweep-verify", _LOCAL_SWEEP, _CLOUD_VERIFY
     ),
-    # cheapest: single local model does both passes.
-    "local-sweep": ModelProfile("local-sweep", "strix-qwen3.6-35b", "strix-qwen3.6-35b"),
-    # local sweep, big-local verify (alias of the default's intent).
-    "local-verify": ModelProfile("local-verify", "strix-qwen3.6-35b", "strix-qwen3.5-122b"),
-    # hardest verification escalates to a cloud frontier model.
-    "frontier-verify": ModelProfile("frontier-verify", "strix-qwen3.6-35b", "gpt-4o"),
+    # cheapest: single local model does both passes (no cloud spend at all).
+    "local-sweep": ModelProfile("local-sweep", _LOCAL_SWEEP, _LOCAL_SWEEP),
+    # local sweep, cheap-cloud verify (alias of the default's intent).
+    "local-verify": ModelProfile("local-verify", _LOCAL_SWEEP, _CLOUD_VERIFY),
+    # premium escalation: verify with the OpenAI frontier model.
+    "frontier-verify": ModelProfile("frontier-verify", _LOCAL_SWEEP, "gpt-5.4-mini"),
+    # all-cloud: deepseek does both passes (fastest strong run, still cheap).
+    "cloud-deepseek": ModelProfile("cloud-deepseek", _CLOUD_VERIFY, _CLOUD_VERIFY),
 }
 
 
@@ -457,10 +472,35 @@ def _vuln_items(data: Any) -> list[Any]:
     return []
 
 
+def _strix_output_dir(run_dir: Path | str) -> Path:
+    """Resolve the directory Strix actually wrote its artifacts to.
+
+    Strix >=1.0 nests every output (``vulnerabilities.json`` / ``run.json`` /
+    ``penetration_test_report.md``) under ``<run_dir>/strix_runs/<target>_<hash>/``,
+    NOT under ``run_dir`` itself — so the parsers must descend into it (otherwise
+    findings, run metadata, cost, and the report path all silently read as empty).
+    Returns the newest nested child that carries a run/vulns file; falls back to
+    ``run_dir`` for a flat layout or test fixtures so older callers keep working.
+    """
+    base = Path(run_dir)
+    nested_root = base / "strix_runs"
+    if nested_root.is_dir():
+        candidates = [
+            d
+            for d in nested_root.iterdir()
+            if d.is_dir()
+            and ((d / "vulnerabilities.json").exists() or (d / "run.json").exists())
+        ]
+        if candidates:
+            return max(candidates, key=lambda d: d.stat().st_mtime)
+    return base
+
+
 def parse_vulnerabilities(run_dir: Path | str) -> list[ParsedVulnerability]:
-    """Parse ``<run_dir>/vulnerabilities.json`` into normalized findings (tolerant of
-    list vs ``{"vulnerabilities": [...]}`` shapes and heterogeneous key names)."""
-    path = Path(run_dir) / "vulnerabilities.json"
+    """Parse ``vulnerabilities.json`` into normalized findings (tolerant of list vs
+    ``{"vulnerabilities": [...]}`` shapes and heterogeneous key names). Reads from
+    Strix's nested output dir (see :func:`_strix_output_dir`)."""
+    path = _strix_output_dir(run_dir) / "vulnerabilities.json"
     if not path.exists():
         return []
     try:
@@ -472,9 +512,18 @@ def parse_vulnerabilities(run_dir: Path | str) -> list[ParsedVulnerability]:
 
 
 def parse_run_metadata(run_dir: Path | str) -> dict[str, Any]:
-    """Parse ``<run_dir>/run.json`` (Strix run id, usage, cost) tolerantly."""
-    path = Path(run_dir) / "run.json"
-    empty = {"strix_run_id": None, "cost_usd": None, "usage": None, "raw": {}}
+    """Parse ``run.json`` (Strix run id, own completion status, usage, cost)
+    tolerantly, from Strix's nested output dir. ``strix_status`` is Strix's OWN
+    terminal verdict (``completed`` / ``failed``) — the authoritative success
+    signal, since Strix exits non-zero when it finds vulnerabilities."""
+    path = _strix_output_dir(run_dir) / "run.json"
+    empty = {
+        "strix_status": None,
+        "strix_run_id": None,
+        "cost_usd": None,
+        "usage": None,
+        "raw": {},
+    }
     if not path.exists():
         return dict(empty)
     try:
@@ -485,9 +534,12 @@ def parse_run_metadata(run_dir: Path | str) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raw = {"value": raw}
     strix_run_id = _first(raw, "run_id", "id", "strix_run_id", "runId")
+    strix_status = _first(raw, "status", "state", "result")
     cost = _first(raw, "cost_usd", "cost", "total_cost", "totalCost", "total_cost_usd")
-    usage = _first(raw, "usage", "token_usage", "tokens", "usage_summary")
+    # Strix >=1.0 names the block ``llm_usage``; keep the legacy fallbacks too.
+    usage = _first(raw, "llm_usage", "usage", "token_usage", "tokens", "usage_summary")
     return {
+        "strix_status": str(strix_status).strip().lower() if strix_status is not None else None,
         "strix_run_id": str(strix_run_id) if strix_run_id is not None else None,
         "cost_usd": _to_float(cost),
         "usage": usage if isinstance(usage, dict) else ({"raw": usage} if usage is not None else None),
@@ -496,7 +548,7 @@ def parse_run_metadata(run_dir: Path | str) -> dict[str, Any]:
 
 
 def _report_path(run_dir: Path) -> str | None:
-    report = Path(run_dir) / "penetration_test_report.md"
+    report = _strix_output_dir(run_dir) / "penetration_test_report.md"
     return str(report) if report.exists() else None
 
 
@@ -695,6 +747,13 @@ class StrixRunner:
             result, run=run, engagement=engagement, actor=actor, verified_by=invocation.model
         )
 
+        # Hybrid verify pass (spec §7): re-check each finding with the profile's
+        # (stronger) verify model. Opt-in via settings.strix_verify_pass; a no-op
+        # when disabled, when there are no findings, or when verify == sweep model.
+        await self._run_verify_pass(
+            findings, sweep_model=invocation.model, verify_model=invocation.verify_model
+        )
+
         # If an operator stop already set a terminal status, don't clobber it.
         fresh = await self.runs.get(run.id)
         if fresh is not None and fresh.status in _TERMINAL:
@@ -722,7 +781,15 @@ class StrixRunner:
                 findings_count=len(findings),
             )
 
-        failed = bool(result.error) or (result.returncode not in (0, None))
+        # Strix exits NON-ZERO when it finds vulnerabilities (scanner/CI convention),
+        # so the process exit code alone is not a failure signal. Trust Strix's own
+        # run.json verdict: if it reports "completed", the scan succeeded regardless
+        # of exit code. Genuine failures (binary missing → error set; timeout → error
+        # set; crash before writing run.json → strix_status != "completed") still fail.
+        engine_completed = self._engine_completed(result)
+        failed = bool(result.error) or (
+            not engine_completed and result.returncode not in (0, None)
+        )
         if failed:
             return await self._terminal(
                 run,
@@ -793,8 +860,16 @@ class StrixRunner:
             _write_pid(invocation.pid_path, proc.pid)
             log.info("strix.spawn run=%s pid=%s", run.id, proc.pid)
 
+            poll = getattr(self.settings, "runner_stop_poll_seconds", 0) or 0
             try:
-                if timeout:
+                if poll > 0:
+                    # Sidecar mode: the API's pidfile signal can't reach this
+                    # process, so poll the run's DB status and terminate the live
+                    # subprocess if an operator stopped it (cross-container E-stop).
+                    returncode, stopped, error = await self._wait_with_stop_watch(
+                        proc, run=run, timeout=timeout, poll=poll
+                    )
+                elif timeout:
                     returncode = await asyncio.wait_for(proc.wait(), timeout=timeout)
                 else:
                     returncode = await proc.wait()
@@ -815,6 +890,25 @@ class StrixRunner:
             except OSError:  # pragma: no cover
                 pass
 
+        return self._build_result(
+            invocation, returncode=returncode, error=error, stopped=stopped
+        )
+
+    def _build_result(
+        self,
+        invocation: StrixInvocation,
+        *,
+        returncode: int | None,
+        error: str | None,
+        stopped: bool,
+    ) -> StrixRunResult:
+        """Parse this engine's on-disk outputs into a :class:`StrixRunResult`.
+
+        The engine seam: the shared ``execute`` pipeline (spawn/store/verify/terminal)
+        is engine-agnostic; each engine only differs in how it builds its command
+        (``prepare``), reads its results (this), and reports success
+        (``_engine_completed``). Strix reads its nested vulnerabilities.json/run.json.
+        """
         findings = parse_vulnerabilities(invocation.run_dir)
         metadata = parse_run_metadata(invocation.run_dir)
         metadata["returncode"] = returncode
@@ -825,6 +919,114 @@ class StrixRunner:
             report_path=_report_path(invocation.run_dir),
             error=error,
             stopped=stopped,
+        )
+
+    def _engine_completed(self, result: StrixRunResult) -> bool:
+        """Did the engine finish successfully (independent of exit code)? Strix
+        trusts its own run.json ``status``; other engines override (e.g. Nuclei
+        uses a zero exit code)."""
+        return result.metadata.get("strix_status") == "completed"
+
+    async def _wait_with_stop_watch(
+        self, proc: "asyncio.subprocess.Process", *, run: Run, timeout: float | None, poll: float
+    ) -> tuple[int | None, bool, str | None]:
+        """Wait for the subprocess while polling the DB for an operator stop.
+
+        Returns ``(returncode, stopped, error)``. Racing ``proc.wait()`` against a
+        ``poll``-second DB status check lets a cross-container E-stop actually kill a
+        live scan (the API flips the run out of RUNNING; this process sees it and
+        terminates Strix). ``timeout`` still bounds the total wait.
+        """
+        wait_task = asyncio.ensure_future(proc.wait())
+        elapsed = 0.0
+        try:
+            while True:
+                remaining = None
+                if timeout is not None:
+                    remaining = timeout - elapsed
+                    if remaining <= 0:
+                        await _terminate(proc)
+                        return proc.returncode, True, f"strix run timed out after {timeout}s"
+                step = poll if remaining is None else min(poll, remaining)
+                done, _pending = await asyncio.wait({wait_task}, timeout=step)
+                if wait_task in done:
+                    return wait_task.result(), False, None
+                elapsed += step
+                if await self._run_externally_stopped(run):
+                    await _terminate(proc)
+                    log.warning("strix.external-stop run=%s", run.id)
+                    return proc.returncode, True, "run stopped by operator"
+        except asyncio.CancelledError:
+            wait_task.cancel()
+            raise
+
+    async def _run_externally_stopped(self, run: Run) -> bool:
+        """True if the run has left RUNNING in the DB (operator stop / emergency halt).
+
+        Reads through a fresh, org-bound session so RLS still applies; any error is
+        treated as 'not stopped' so a transient DB blip never kills a healthy scan.
+        """
+        from app.db.rls import clear_org_context, set_org_context  # lazy: avoid cycle
+
+        try:
+            async with get_sessionmaker()() as session:
+                if run.org_id is not None:
+                    await set_org_context(session, run.org_id)
+                fresh = await RunRepository(session).get(run.id)
+                if run.org_id is not None:
+                    await clear_org_context(session)
+                return fresh is not None and fresh.status in _TERMINAL
+        except Exception:  # noqa: BLE001 - a status-check blip must not kill the run
+            log.warning("strix.stop-watch: status check failed run=%s", run.id, exc_info=True)
+            return False
+
+    async def _run_verify_pass(
+        self,
+        findings: list[Finding],
+        *,
+        sweep_model: str,
+        verify_model: str | None,
+    ) -> None:
+        """Adversarially re-check each finding with the (stronger) verify model.
+
+        Opt-in via ``settings.strix_verify_pass``; a no-op when disabled, when there
+        are no findings, or when the verify model equals the sweep model (re-asking
+        the model that just found it gains nothing). Records the verdict in
+        ``evidence["verification"]``; a confident CONFIRM promotes ``NEW``→``VERIFIED``
+        and stamps ``verified_by``. A refute never hides a finding — that stays a
+        human triage call (see :mod:`app.engine.verify`). Fail-open per finding.
+        """
+        if not findings or not getattr(settings, "strix_verify_pass", False):
+            return
+        if not verify_model or verify_model == sweep_model:
+            return
+        from app.engine.verify import CONFIRM_THRESHOLD, verify_finding_fields
+
+        verified = 0
+        for f in findings:
+            fields = {
+                "title": f.title,
+                "severity": f.severity,
+                "endpoint": f.endpoint,
+                "cwe": f.cwe,
+                "poc": f.poc,
+                "payload": f.payload,
+                "evidence": f.evidence or {},
+            }
+            verdict = await verify_finding_fields(fields, model=verify_model)
+            evidence = dict(f.evidence or {})
+            evidence["verification"] = verdict
+            f.evidence = evidence  # reassign so SQLAlchemy tracks the JSONB mutation
+            if verdict.get("verdict") == "confirmed" and (verdict.get("confidence") or 0) >= CONFIRM_THRESHOLD:
+                f.status = FindingStatus.VERIFIED
+                f.verified_by = verify_model
+                verified += 1
+        await self.session.flush()
+        log.info(
+            "strix.verify.pass run findings=%d verified=%d model=%s",
+            len(findings),
+            verified,
+            verify_model,
         )
 
     async def _store_findings(
@@ -921,6 +1123,28 @@ class StrixRunner:
 # ---------------------------------------------------------------------------
 
 
+def _runner_for_engine(engine: str | None, session: "AsyncSession") -> "StrixRunner":
+    """Pick the engine runner for a run (all imported lazily to avoid import cycles):
+    ``nuclei`` → :class:`NucleiRunner`, ``gitleaks`` → :class:`GitleaksRunner`,
+    ``trivy`` → :class:`TrivyRunner`; anything else → the default :class:`StrixRunner`.
+    Every runner shares the gate-cleared execute pipeline (only the three engine
+    seams — ``prepare`` / ``_build_result`` / ``_engine_completed`` — differ)."""
+    name = (engine or "strix").strip().lower()
+    if name == "nuclei":
+        from app.engine.nuclei_runner import NucleiRunner
+
+        return NucleiRunner(session)
+    if name == "gitleaks":
+        from app.engine.gitleaks_runner import GitleaksRunner
+
+        return GitleaksRunner(session)
+    if name == "trivy":
+        from app.engine.trivy_runner import TrivyRunner
+
+        return TrivyRunner(session)
+    return StrixRunner(session)
+
+
 async def execute_run(
     *,
     run_id: uuid.UUID,
@@ -963,13 +1187,15 @@ async def execute_run(
         if org_id is not None:
             await set_org_context(session, org_id)
         try:
-            runner = StrixRunner(session)
-            run = await runner.runs.get(run_id)
+            run = await RunRepository(session).get(run_id)
             if run is None:
                 raise NotFoundError(f"run {run_id} not found")
             engagement = await EngagementRepository(session).get(engagement_id)
             if engagement is None:
                 raise NotFoundError(f"engagement {engagement_id} not found")
+            # Dispatch to the run's engine (default strix). NucleiRunner subclasses
+            # StrixRunner, reusing the gate-cleared store/verify/terminal pipeline.
+            runner = _runner_for_engine(getattr(run, "engine", "strix"), session)
             return await runner.execute(
                 run=run,
                 engagement=engagement,

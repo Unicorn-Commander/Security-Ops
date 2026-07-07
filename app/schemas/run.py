@@ -32,6 +32,11 @@ class RunCreate(BaseModel):
     targets: list[str] = Field(min_length=1)
     mode: RunMode = RunMode.STANDARD
     model_profile: str | None = None
+    # Which scan engine runs this. ``strix`` (default) = autonomous agent;
+    # ``nuclei`` = templated web breadth scanner; ``gitleaks`` = repo secret scanner
+    # (REPO targets); ``trivy`` = CVE/SCA/misconfig/secret scanner (IMAGE or REPO
+    # targets). All ride the same server-side authorization gate.
+    engine: str = "strix"
 
     @field_validator("targets")
     @classmethod
@@ -40,6 +45,14 @@ class RunCreate(BaseModel):
         if not cleaned:
             raise ValueError("at least one non-empty target is required")
         return cleaned
+
+    @field_validator("engine")
+    @classmethod
+    def _known_engine(cls, value: str) -> str:
+        v = (value or "strix").strip().lower()
+        if v not in ("strix", "nuclei", "gitleaks", "trivy"):
+            raise ValueError("engine must be 'strix', 'nuclei', 'gitleaks', or 'trivy'")
+        return v
 
 
 class RunRead(BaseModel):
@@ -51,6 +64,8 @@ class RunRead(BaseModel):
     org_id: uuid.UUID
     # Strix's own run id (set in Phase 2).
     strix_run_id: str | None = None
+    # Which engine ran this (strix | nuclei | gitleaks | trivy).
+    engine: str = "strix"
     mode: RunMode
     model_profile: str
     targets: list[str] = Field(default_factory=list)

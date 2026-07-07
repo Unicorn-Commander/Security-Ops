@@ -34,12 +34,31 @@ class TargetKind(str, enum.Enum):
     URL = "URL"
     IP_RANGE = "IP_RANGE"
     REPO = "REPO"
+    # A container image reference (``registry/name:tag`` or a digest) — scanned by
+    # the Trivy engine (``trivy image``). Added for engine #4; see migration
+    # ``0008_target_kind_image`` and ``app/engine/trivy_runner.py``.
+    IMAGE = "IMAGE"
 
 
 class AttestationMethod(str, enum.Enum):
     """How ownership/authorization was proven. External DOMAIN/URL/IP_RANGE targets
     require a domain-ownership proof (DNS_TXT / FILE_DROP / HTTP_HEADER); CHECKBOX +
-    TYPED_CONFIRMATION are the minimum for all; OWNED = self-owned suite asset."""
+    TYPED_CONFIRMATION are the minimum for all; OWNED = self-owned suite asset.
+
+    Two admin-only "authorized-operator" methods skip the live ownership proof in
+    favor of a recorded human authorization (spec §4, break-glass extension) — both
+    are org-ADMIN-gated, require a written justification, are time-boxed, and are
+    written to the immutable audit log exactly like a proven attestation:
+
+    * ``SELF_ATTESTED`` — an admin authorizes a target on their own responsibility
+      (owned infra, signed engagement) instead of proving ownership via DNS/HTTP.
+    * ``BREAK_GLASS`` — the emergency red-team / DFIR path: authorize *any* target
+      with a stated justification, no ownership proof. Gated behind an install-time
+      switch (``settings.attestation_allow_break_glass``), admin-only, short TTL,
+      and recorded under its own ``TARGET_BREAK_GLASS`` audit action so every use is
+      independently alertable. Accountability (who/when/why) is preserved by design;
+      only the ownership-proof *friction* is removed.
+    """
 
     CHECKBOX = "CHECKBOX"
     TYPED_CONFIRMATION = "TYPED_CONFIRMATION"
@@ -47,6 +66,8 @@ class AttestationMethod(str, enum.Enum):
     FILE_DROP = "FILE_DROP"
     HTTP_HEADER = "HTTP_HEADER"
     OWNED = "OWNED"
+    SELF_ATTESTED = "SELF_ATTESTED"
+    BREAK_GLASS = "BREAK_GLASS"
 
 
 class AttestationStatus(str, enum.Enum):

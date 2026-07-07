@@ -1,0 +1,140 @@
+# syntax=docker/dockerfile:1
+# Security-Ops ISOLATED RUNNER sidecar — `python -m app.runner` (app/runner/loop.py).
+#
+# This is NOT the API image. It is the ONLY process in the stack that:
+#   * holds the Docker socket (host root) — it drives Strix sandbox containers, and
+#   * shells out to the `strix` CLI to execute gate-cleared runs claimed from the
+#     `run_queue` table.
+# The internet-facing API image (Dockerfile) deliberately does neither. Keeping the
+# blast radius (Docker socket + exploit-running subprocess) off the public surface is
+# the whole point of the sidecar split — see deploy/bigboy/docker-compose.bigboy.yml.
+#
+# Build context is the REPOSITORY ROOT (compose: secops-runner.build.context = ../..).
+# Same python:3.12-slim base + requirements install + source layout as Dockerfile,
+# minus uvicorn/alembic, plus the Docker CLI client and the Strix engine.
+
+FROM python:3.12-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONPATH=/app \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+WORKDIR /app
+
+# --- Docker CLI client -----------------------------------------------------
+# We need ONLY the client (`docker`), to talk to the host daemon over the mounted
+# /var/run/docker.sock (Strix launches sandbox containers via that socket). We do
+# NOT want the engine/containerd/runc that Debian's `docker.io` metapackage drags
+# in (~300MB, and a daemon we never run). Docker's official apt repo ships a
+# standalone `docker-ce-cli` package = just the client. That is the simplest
+# reliable, arch-agnostic path on slim, so we add the repo and install only that.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl gnupg \
+    && install -m 0755 -d /etc/apt/keyrings \
+    && curl -fsSL https://download.docker.com/linux/debian/gpg \
+         -o /etc/apt/keyrings/docker.asc \
+    && chmod a+r /etc/apt/keyrings/docker.asc \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] \
+https://download.docker.com/linux/debian $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
+         > /etc/apt/sources.list.d/docker.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends docker-ce-cli \
+    && apt-get purge -y --auto-remove curl gnupg \
+    && rm -rf /var/lib/apt/lists/*
+
+# --- dependency layer (cached until requirements.txt changes) --------------
+COPY requirements.txt ./
+RUN pip install -r requirements.txt
+
+# --- Strix engine ----------------------------------------------------------
+# Package name confirmed from the Security-Ops bake-off decision record
+# (memory `project_security_ops_strix.md`: "embedding the real Strix engine …
+# `pip install strix-agent`, LiteLLM-based"). It provides the `strix` CLI that
+# app/engine/strix_runner.py invokes (STRIX_BIN="strix"). Pinned to 1.0.4 — the
+# version confirmed on PATH in the built image (`strix --version` → 1.0.4), paired
+# with the sandbox image ghcr.io/usestrix/strix-sandbox:1.0.0.
+RUN pip install strix-agent==1.0.4
+
+# --- Nuclei engine (ProjectDiscovery, MIT) ---------------------------------
+# Engine #2 (app/engine/nuclei_runner.py): templated breadth scanning behind the
+# same authorization gate as Strix. Install the standalone release binary for the
+# build arch (resolve the latest tag via the GitHub API — no version pin to chase),
+# then bake the community templates into the image so scans are deterministic and
+# do NOT phone home at runtime (the runner uses `-disable-update-check`).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl unzip \
+    && NUCLEI_VER=$(curl -fsSL https://api.github.com/repos/projectdiscovery/nuclei/releases/latest \
+         | grep -oP '"tag_name":\s*"v\K[^"]+') \
+    && ARCH=$(dpkg --print-architecture) \
+    && curl -fsSL -o /tmp/nuclei.zip \
+         "https://github.com/projectdiscovery/nuclei/releases/download/v${NUCLEI_VER}/nuclei_${NUCLEI_VER}_linux_${ARCH}.zip" \
+    && unzip -o /tmp/nuclei.zip -d /usr/local/bin nuclei \
+    && chmod +x /usr/local/bin/nuclei \
+    && rm -f /tmp/nuclei.zip \
+    && nuclei -update-templates || true \
+    && apt-get purge -y --auto-remove curl unzip \
+    && rm -rf /var/lib/apt/lists/*
+
+# --- Gitleaks engine (engine #3, secret scanning, MIT) ---------------------
+# app/engine/gitleaks_runner.py scans gate-cleared REPO targets for hard-coded
+# secrets (working tree + git history). Install the standalone release binary for
+# the build arch (resolve the latest tag via the GitHub API — no version pin to
+# chase). `git` is required at runtime: the runner clones URL targets before
+# scanning (the clone happens in the spawned process so the E-stop can kill it).
+# Gitleaks ships its rules embedded in the binary, so there is NOTHING to fetch at
+# runtime (no phone-home).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl git \
+    && GITLEAKS_VER=$(curl -fsSL https://api.github.com/repos/gitleaks/gitleaks/releases/latest \
+         | grep -oP '"tag_name":\s*"v\K[^"]+') \
+    && ARCH=$(dpkg --print-architecture) \
+    && case "$ARCH" in amd64) GLARCH=x64 ;; arm64) GLARCH=arm64 ;; *) GLARCH="$ARCH" ;; esac \
+    && curl -fsSL -o /tmp/gitleaks.tar.gz \
+         "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VER}/gitleaks_${GITLEAKS_VER}_linux_${GLARCH}.tar.gz" \
+    && tar -xzf /tmp/gitleaks.tar.gz -C /usr/local/bin gitleaks \
+    && chmod +x /usr/local/bin/gitleaks \
+    && rm -f /tmp/gitleaks.tar.gz \
+    && apt-get purge -y --auto-remove curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# --- Trivy engine (engine #4, CVE/SCA/IaC/secret, Apache-2.0) ---------------
+# app/engine/trivy_runner.py scans IMAGE (`trivy image`) and REPO (`trivy fs`/
+# `trivy repo`) targets for vulnerable packages, misconfigurations, and secrets.
+# Install the standalone release binary for the build arch (resolve the latest tag
+# via the GitHub API — no version pin to chase), then PRE-CACHE the vulnerability
+# DB into the image (`--download-db-only`) so the first scan does not block on a DB
+# pull. Trivy still refreshes the DB opportunistically at runtime (default cadence);
+# it degrades gracefully to the baked DB when offline. NOTE: `trivy image` needs the
+# Docker socket to pull/inspect images — the runner already mounts it for Strix.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && TRIVY_VER=$(curl -fsSL https://api.github.com/repos/aquasecurity/trivy/releases/latest \
+         | grep -oP '"tag_name":\s*"v\K[^"]+') \
+    && ARCH=$(dpkg --print-architecture) \
+    && case "$ARCH" in amd64) TVARCH=64bit ;; arm64) TVARCH=ARM64 ;; *) TVARCH="$ARCH" ;; esac \
+    && curl -fsSL -o /tmp/trivy.tar.gz \
+         "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VER}/trivy_${TRIVY_VER}_Linux-${TVARCH}.tar.gz" \
+    && tar -xzf /tmp/trivy.tar.gz -C /usr/local/bin trivy \
+    && chmod +x /usr/local/bin/trivy \
+    && rm -f /tmp/trivy.tar.gz \
+    && trivy image --download-db-only || true \
+    && apt-get purge -y --auto-remove curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# --- application source + migrations (SAME layout as Dockerfile, for parity) ---
+# NOTE: the runner NEVER runs `alembic upgrade head` — the API entrypoint owns
+# migrations; two racing migrators is a bug. alembic.ini/migrations/scripts are
+# copied only so this image stays interchangeable with the API source tree.
+COPY alembic.ini ./
+COPY migrations ./migrations
+COPY scripts ./scripts
+COPY app ./app
+
+# No EXPOSE / no uvicorn: the runner has NO inbound network surface. It only polls
+# the DB (run_queue) and drives the Docker socket. Healthcheck omitted deliberately
+# (there is no port to probe and no `/health`); liveness is observed via the loop's
+# structured logs and `restart: unless-stopped`.
+
+CMD ["python", "-m", "app.runner"]
