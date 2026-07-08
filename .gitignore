@@ -29,3 +29,6 @@ strix_runs/
 
 # bigboy deploy secrets
 deploy/bigboy/.env.bigboy
+
+# bigboy SSO allowlist (PII) — never commit; use emails.txt.example
+deploy/bigboy/emails.txt
