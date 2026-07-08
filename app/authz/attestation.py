@@ -30,7 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.audit.writer import record_event
 from app.authz.proof import ProofResult, is_proof_method, verify_proof
 from app.core.config import settings
-from app.core.errors import NotFoundError, ValidationAppError
+from app.core.errors import ForbiddenError, NotFoundError, ValidationAppError
 from app.models.audit import AuditAction
 from app.models.target import AttestationMethod, AttestationStatus, AuthorizedTarget
 
@@ -48,6 +48,20 @@ _PROOF_METHODS = frozenset(
         AttestationMethod.HTTP_HEADER,
     }
 )
+
+# Admin-only "authorized-operator" methods: no live ownership proof; authorization
+# is a RECORDED human decision (justification + acknowledgement), still time-boxed
+# and audited. See AttestationMethod docstring and settings.attestation_allow_*.
+_PRIVILEGED_METHODS = frozenset(
+    {
+        AttestationMethod.SELF_ATTESTED,
+        AttestationMethod.BREAK_GLASS,
+    }
+)
+
+# Methods that must always carry an expiry (external + break-glass grants never
+# become standing access): a default TTL is applied when the caller supplies none.
+_EXPIRING_METHODS = _PROOF_METHODS | _PRIVILEGED_METHODS
 
 #: Signature of an injectable proof verifier (defaults to the live verifier).
 ProofVerifier = Callable[[AuthorizedTarget, AttestationMethod], ProofResult]
@@ -101,9 +115,11 @@ async def attest_target(
     method: AttestationMethod | str,
     checkbox_ack: bool = False,
     typed_confirmation: str | None = None,
+    justification: str | None = None,
     evidence: dict[str, Any] | None = None,
     expires_at: datetime | None = None,
     verifier: ProofVerifier | None = None,
+    actor_is_admin: bool = False,
 ) -> AuthorizedTarget:
     """Attest ``target_id`` so the gate will treat it as scannable, and audit it.
 
@@ -121,6 +137,15 @@ async def attest_target(
     * a supplied ``expires_at`` must be in the future; for external-proof methods a
       default lifetime (``settings.attestation_default_ttl_days``) is applied when
       none is given, so external authorizations always expire.
+    * the admin-only ``SELF_ATTESTED`` / ``BREAK_GLASS`` methods skip the live proof
+      in favor of a recorded human authorization: they require ``actor_is_admin``
+      (and, for break-glass, the ``attestation_allow_break_glass`` install switch),
+      a written ``justification``, and are time-boxed (break-glass on the shorter
+      ``attestation_break_glass_ttl_days``). Break-glass is recorded under its own
+      ``TARGET_BREAK_GLASS`` audit action. This removes the ownership-proof
+      *friction* for authorized red-team / DFIR work while preserving the audit
+      trail that makes that work accountable. Raises :class:`ForbiddenError` (403)
+      if the caller may not use the method.
 
     On success it sets status ``ATTESTED`` (clearing any prior revocation/expiry),
     records who/when/how + the live proof result, appends exactly one
@@ -136,21 +161,31 @@ async def attest_target(
         raise NotFoundError("Target not found")
 
     method = _coerce_method(method)
-    _enforce_minimums(method, checkbox_ack, typed_confirmation, evidence, expires_at)
+    # Admin-only break-glass / self-attest paths are authorized (role + install
+    # switch) BEFORE any minimums are checked, so an unprivileged caller learns
+    # only that the method is unavailable, never how to satisfy it.
+    if method in _PRIVILEGED_METHODS:
+        _authorize_privileged_method(method, actor_is_admin)
+    _enforce_minimums(
+        method, checkbox_ack, typed_confirmation, justification, evidence, expires_at
+    )
 
     # External-target ownership proof — VERIFIED live, not merely recorded.
+    # Privileged methods (self-attest / break-glass) deliberately skip this: their
+    # authorization is the recorded human decision, not a live network proof.
     proof_evidence: dict[str, Any] | None = None
     if is_proof_method(method):
         proof_evidence = _verify_ownership_proof(target, method, verifier)
 
     now = _utcnow()
     effective_expiry = _effective_expiry(method, expires_at, now)
+    is_break_glass = method == AttestationMethod.BREAK_GLASS
 
     target.attestation_status = AttestationStatus.ATTESTED
     target.attestation_method = method
     target.attested_by = _principal_ref(principal)
     target.attested_at = now
-    merged_evidence = _merge_evidence(evidence, proof_evidence)
+    merged_evidence = _merge_evidence(evidence, proof_evidence, method, justification)
     if merged_evidence is not None:
         target.attestation_evidence = merged_evidence
     target.expires_at = effective_expiry
@@ -160,9 +195,17 @@ async def attest_target(
     # the route owns the commit (no commit in this function).
     await session.flush()
 
+    # Break-glass gets its own audit action so every emergency grant is trivially
+    # alertable ("who used god-mode, when, why"); everything else stays TARGET_ATTESTED.
+    action = AuditAction.TARGET_BREAK_GLASS if is_break_glass else AuditAction.TARGET_ATTESTED
+    reason = (
+        f"BREAK-GLASS authorization (no ownership proof) via {method.value}"
+        if is_break_glass
+        else f"target attested via {method.value}"
+    )
     await record_event(
         session,
-        action=AuditAction.TARGET_ATTESTED,
+        action=action,
         actor=principal,
         org_id=target.org_id,
         engagement_id=None,
@@ -170,17 +213,55 @@ async def attest_target(
         target=target.value,
         target_id=target.id,
         decision="allow",
-        reason=f"target attested via {method.value}",
+        reason=reason,
         detail={
             "method": method.value,
             "checkbox_ack": bool(checkbox_ack),
             "typed_confirmation": bool((typed_confirmation or "").strip()),
+            "justification": (justification or "").strip() or None,
+            "privileged": method in _PRIVILEGED_METHODS,
+            "break_glass": is_break_glass,
+            "authorized_by_admin": bool(actor_is_admin) if method in _PRIVILEGED_METHODS else None,
             "expires_at": effective_expiry.isoformat() if isinstance(effective_expiry, datetime) else None,
             "evidence_keys": sorted(merged_evidence) if isinstance(merged_evidence, dict) else None,
             "proof_verified": bool(proof_evidence and proof_evidence.get("verified")),
         },
     )
     return target
+
+
+def _authorize_privileged_method(method: AttestationMethod, actor_is_admin: bool) -> None:
+    """Gate the admin-only attestation paths: role + (for break-glass) install switch.
+
+    Raises :class:`ForbiddenError` (403) — an authorization failure, distinct from a
+    422 "you filled the form out wrong" — when the caller may not use this method:
+
+    * ``SELF_ATTESTED`` requires ``settings.attestation_allow_self_attest`` (on by
+      default) AND an org-ADMIN caller.
+    * ``BREAK_GLASS`` additionally requires the install-time
+      ``settings.attestation_allow_break_glass`` switch to be enabled.
+
+    Because MCP PAT principals resolve to OPERATOR (never ADMIN), a leaked token can
+    never reach these paths — god-mode is only available to an interactive admin.
+    """
+    if method == AttestationMethod.SELF_ATTESTED and not settings.attestation_allow_self_attest:
+        raise ForbiddenError(
+            "self-attestation is disabled on this deployment",
+            code="attestation_method_disabled",
+            detail={"method": method.value},
+        )
+    if method == AttestationMethod.BREAK_GLASS and not settings.attestation_allow_break_glass:
+        raise ForbiddenError(
+            "break-glass attestation is not enabled on this deployment",
+            code="attestation_method_disabled",
+            detail={"method": method.value, "enable_with": "attestation_allow_break_glass"},
+        )
+    if not actor_is_admin:
+        raise ForbiddenError(
+            f"{method.value} attestation requires an organization admin",
+            code="attestation_admin_required",
+            detail={"method": method.value},
+        )
 
 
 def _verify_ownership_proof(
@@ -218,24 +299,49 @@ def _verify_ownership_proof(
 def _effective_expiry(
     method: AttestationMethod, expires_at: datetime | None, now: datetime
 ) -> datetime | None:
-    """Apply a default lifetime for external-proof attestations lacking an expiry."""
+    """Apply a default lifetime for methods that must always expire.
+
+    External-proof and privileged (self-attest / break-glass) grants never become
+    standing access: when no explicit expiry is supplied a default TTL is applied.
+    Break-glass uses the deliberately shorter ``attestation_break_glass_ttl_days``.
+    """
     if expires_at is not None:
         return expires_at
-    if is_proof_method(method):
+    if method == AttestationMethod.BREAK_GLASS:
+        days = max(int(settings.attestation_break_glass_ttl_days or 0), 1)
+        return now + timedelta(days=days)
+    if method in _EXPIRING_METHODS:
         days = max(int(settings.attestation_default_ttl_days or 0), 1)
         return now + timedelta(days=days)
     return None
 
 
 def _merge_evidence(
-    supplied: dict[str, Any] | None, proof: dict[str, Any] | None
+    supplied: dict[str, Any] | None,
+    proof: dict[str, Any] | None,
+    method: AttestationMethod | None = None,
+    justification: str | None = None,
 ) -> dict[str, Any] | None:
-    """Combine operator-supplied evidence with the server's live-proof record."""
-    if supplied is None and proof is None:
+    """Combine operator evidence, the live-proof record, and the privileged-grant
+    justification into the persisted evidence blob.
+
+    For a self-attest / break-glass grant the recorded ``authorization`` block IS
+    the accountability artifact (there is no ownership proof), so the justification
+    text and method label are always captured.
+    """
+    justification = (justification or "").strip()
+    is_privileged = method in _PRIVILEGED_METHODS
+    if supplied is None and proof is None and not (is_privileged and justification):
         return None
     merged: dict[str, Any] = dict(supplied or {})
     if proof is not None:
         merged["ownership_proof"] = proof
+    if is_privileged:
+        merged["authorization"] = {
+            "method": method.value,
+            "basis": justification or None,
+            "ownership_proof": False,
+        }
     return merged
 
 
@@ -246,6 +352,7 @@ def _enforce_minimums(
     method: AttestationMethod,
     checkbox_ack: bool,
     typed_confirmation: str | None,
+    justification: str | None,
     evidence: dict[str, Any] | None,
     expires_at: datetime | None,
 ) -> None:
@@ -260,6 +367,16 @@ def _enforce_minimums(
             "typed confirmation is required for TYPED_CONFIRMATION attestation",
             code="attestation_incomplete",
             detail={"field": "typed_confirmation"},
+        )
+    # Privileged (self-attest / break-glass) grants have no ownership proof, so the
+    # written justification IS the authorization record — it is mandatory. A short
+    # floor prevents an empty "." from standing in for a real basis.
+    if method in _PRIVILEGED_METHODS and len((justification or "").strip()) < 8:
+        raise ValidationAppError(
+            "a written authorization justification (min 8 chars) is required for "
+            f"{method.value} attestation",
+            code="attestation_incomplete",
+            detail={"field": "justification", "method": method.value},
         )
     # NOTE: ownership-proof methods no longer require operator-supplied evidence —
     # the server derives its own per-target challenge token and VERIFIES the proof
