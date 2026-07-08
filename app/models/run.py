@@ -60,6 +60,14 @@ class Run(UUIDMixin, TimestampMixin, Base):
     )
     # Strix's own run id (set in Phase 2).
     strix_run_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Which scan engine executes this run. Additive multi-engine support (spec §7
+    # extension): a plain string (not an enum) so new engines need no migration.
+    # ``strix`` = the autonomous offensive agent (default); ``nuclei`` = templated
+    # breadth scanner. The runner dispatches on this value; both ride the SAME
+    # authorization gate + attestation + findings/verify pipeline.
+    engine: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="strix", server_default="strix"
+    )
     mode: Mapped[RunMode] = mapped_column(_enum(RunMode, "run_mode"), nullable=False)
     model_profile: Mapped[str] = mapped_column(String(255), nullable=False)
     # Concrete gate-checked targets this run covers (list[str]).
