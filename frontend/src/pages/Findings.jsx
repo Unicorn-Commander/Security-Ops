@@ -2,15 +2,16 @@
  * engagement, sorted by severity, with a Detail drawer whose signature action is
  * the hand-off to Brigade. "Security-Ops finds; Brigade fixes." */
 import React from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { useResource, useMutation } from '../lib/hooks.js';
 import {
-  PageHead, Severity, SEV_VAR, StatusBadge, EmptyState, SkeletonRows,
+  PageHead, Severity, SEV_VAR, StatusBadge, Confidence, EmptyState, SkeletonRows,
   ErrorBanner, Banner, Drawer, useToast, CopyButton, Meter, rowActivate,
 } from '../components/ui.jsx';
 import {
   BugIcon, HandoffIcon, ChevronRightIcon, ExternalIcon, ZapIcon, CircleCheckIcon,
+  CircleXIcon, RefreshIcon, FileIcon, ShieldIcon,
 } from '../components/icons.jsx';
 import { fmtDate, relTime, titleCase, SEVERITY_ORDER, sortBySeverity } from '../lib/format.js';
 
@@ -18,6 +19,59 @@ import { fmtDate, relTime, titleCase, SEVERITY_ORDER, sortBySeverity } from '../
 const OPEN = (f) => f.status !== 'REMEDIATED' && f.status !== 'FALSE_POSITIVE';
 const isUrl = (s) => /^https?:\/\//i.test(String(s || ''));
 const HANDOFFABLE = new Set(['NEW', 'VERIFIED']);
+
+/* A finding is "validated" once the verify pass re-checked it and it held. This is
+ * the rarest trust signal an autonomous pentester can show — VERIFIED status means
+ * the engine re-exploited it, and verified_by names the model that did. */
+const isValidated = (f) => f.status === 'VERIFIED' || !!f.verified_by;
+const hostOf = (endpoint) => { try { return new URL(endpoint).host; } catch { return null; } };
+
+/* Confidence tone — the "how sure" axis, kept compact for the dense table (the
+ * exported <Confidence> pill is used at full size in the drawer). Diamond shape so
+ * it never blurs with severity's bars or status's round dot. */
+const CONF_TONE = {
+  confirmed: { short: 'Confirmed', color: 'var(--ok)' },
+  high:      { short: 'High',      color: 'var(--ok)' },
+  medium:    { short: 'Medium',    color: 'var(--warn)' },
+  low:       { short: 'Tentative', color: 'var(--muted)' },
+  uncertain: { short: 'Uncertain', color: 'var(--muted)' },
+};
+function confTone(value) {
+  if (value == null || value === '') return null;
+  return CONF_TONE[String(value).toLowerCase()] || { short: titleCase(String(value)), color: 'var(--warn)' };
+}
+
+/* Compact confidence mark for a table cell — diamond + one-word label. */
+function ConfMark({ value }) {
+  const t = confTone(value);
+  if (!t) return null;
+  return (
+    <span
+      className="conf conf--compact"
+      style={{ color: t.color }}
+      title={`${t.short} confidence — how sure the engine is this is real, separate from how severe it is`}
+    >
+      <span className="conf__mark" aria-hidden="true" />
+      <span className="conf__label">{t.short}</span>
+    </span>
+  );
+}
+
+/* Subtle "Validated" treatment — reads as earned, not another loud badge. */
+function ValidatedRibbon({ verifiedBy }) {
+  return (
+    <div className="trust-ribbon">
+      <span className="trust-ribbon__icon">
+        <ShieldIcon size={15} />
+      </span>
+      <div>
+        <b style={{ color: 'var(--ok)' }}>Validated</b>
+        <span style={{ color: 'var(--text-2)' }}> — the engine re-exploited this and it held.</span>
+        {verifiedBy && <> Confirmed by <span className="mono" style={{ color: 'var(--text)' }}>{verifiedBy}</span>.</>}
+      </div>
+    </div>
+  );
+}
 
 const STATUS_FILTERS = [
   { value: 'ALL', label: 'All' },
@@ -49,11 +103,14 @@ function DetailDrawer({ finding, onClose, onChanged }) {
   const { run, busy } = useMutation();
   const [f, setF] = React.useState(finding);
   const [notice, setNotice] = React.useState(null);
+  // Story vs Evidence — the XBOW split. Story = the human-readable case; Evidence =
+  // the reproducible artifacts. Default to the story, reset on finding change.
+  const [tab, setTab] = React.useState('story');
 
   // Refresh from the server so evidence is current when the drawer opens.
   React.useEffect(() => {
     let live = true;
-    setF(finding); setNotice(null);
+    setF(finding); setNotice(null); setTab('story');
     api(`/findings/${finding.id}`).then((d) => { if (live) setF(d); }).catch(() => {});
     return () => { live = false; };
   }, [finding]);
@@ -62,8 +119,37 @@ function DetailDrawer({ finding, onClose, onChanged }) {
   const chain = Array.isArray(ev.chain) ? ev.chain : null;
   const remediation = ev.remediation;
   const extraKeys = Object.keys(ev).filter((k) => !['remediation', 'chain', 'confidence'].includes(k));
+  const confidence = ev.confidence;
+  const validated = isValidated(f);
+  const host = f.endpoint ? hostOf(f.endpoint) : null;
+  // A finding is here because it out-ranks the rest; describe why using only fields
+  // we actually have — never fabricated EPSS/KEV scores.
+  const sevWord = titleCase(f.severity || '');
+  const impact = [
+    `A ${sevWord.toLowerCase()}-severity finding`,
+    f.cwe ? `classified ${f.cwe}` : null,
+    host ? `on ${host}` : null,
+  ].filter(Boolean).join(' ') + '.';
+  // Count of reproducible artifacts, for the Evidence tab.
+  const artifactCount = (f.poc ? 1 : 0) + (f.payload ? 1 : 0) + (extraKeys.length ? 1 : 0) + (f.endpoint ? 1 : 0);
   const canHandoff = HANDOFFABLE.has(f.status);
-  const settled = f.status === 'HANDED_OFF' || f.status === 'REMEDIATED';
+  // HANDED_OFF is terminal here — Brigade owns the finding once handed off.
+  const handedOff = f.status === 'HANDED_OFF';
+  const closed = f.status === 'FALSE_POSITIVE' || f.status === 'REMEDIATED';
+
+  // Operator triage — set the finding's status (Mark verified / false positive /
+  // reopen). Mirrors the hand-off path: POST the new status, refresh, toast, refetch.
+  async function triage(status, label) {
+    setNotice(null);
+    try {
+      const updated = await run(`/findings/${f.id}/status`, { method: 'POST', body: { status } });
+      setF(updated);
+      toast({ title: label });
+      onChanged();
+    } catch (err) {
+      setNotice({ kind: 'danger', title: 'Update failed', body: err.message });
+    }
+  }
 
   async function handoff() {
     setNotice(null);
@@ -88,31 +174,68 @@ function DetailDrawer({ finding, onClose, onChanged }) {
       title={f.title}
       subtitle={f.id}
       onClose={onClose}
-      footer={settled ? (
+      footer={handedOff ? (
         <div className="row-tight grow" style={{ color: 'var(--text-2)', fontSize: 13 }}>
           <CircleCheckIcon size={16} style={{ color: 'var(--ok)' }} />
-          <span>{f.status === 'REMEDIATED' ? 'Remediated' : 'Handed off to Brigade'}</span>
+          <span>Handed off to Brigade</span>
           {f.handoff_ref && <span className="chip" style={{ marginLeft: 4 }}>{f.handoff_ref}</span>}
         </div>
       ) : (
         <>
           <button className="btn btn--ghost" onClick={onClose}>Close</button>
-          <button
-            className="btn btn--primary"
-            disabled={!canHandoff || busy}
-            title={canHandoff ? 'Send to Brigade for remediation' : 'Only new or verified findings can be handed off'}
-            onClick={handoff}
-          >
-            <HandoffIcon size={15} />{busy ? 'Handing off…' : 'Hand off to Brigade'}
-          </button>
+          {closed && (
+            <button
+              className="btn btn--ghost"
+              disabled={busy}
+              title="Reopen this finding for triage"
+              onClick={() => triage('NEW', 'Reopened')}
+            >
+              <RefreshIcon size={15} />Reopen
+            </button>
+          )}
+          {(f.status === 'NEW' || f.status === 'VERIFIED') && (
+            <button
+              className="btn btn--danger"
+              disabled={busy}
+              title="Dismiss this finding as a false positive"
+              onClick={() => triage('FALSE_POSITIVE', 'Marked false positive')}
+            >
+              <CircleXIcon size={15} />Mark false positive
+            </button>
+          )}
+          {f.status === 'NEW' && (
+            <button
+              className="btn"
+              disabled={busy}
+              title="Confirm this finding"
+              onClick={() => triage('VERIFIED', 'Marked verified')}
+            >
+              <CircleCheckIcon size={15} />Mark verified
+            </button>
+          )}
+          {canHandoff && (
+            <button
+              className="btn btn--primary"
+              disabled={busy}
+              title="Send to Brigade for remediation"
+              onClick={handoff}
+            >
+              <HandoffIcon size={15} />{busy ? 'Handing off…' : 'Hand off to Brigade'}
+            </button>
+          )}
         </>
       )}
     >
+      {/* Two orthogonal axes, always both visible: how BAD + how SURE, plus status. */}
       <div className="row-tight" style={{ gap: 'var(--s-2)', flexWrap: 'wrap' }}>
         <Severity value={f.severity} />
+        <Confidence value={confidence} />
         <StatusBadge value={f.status} />
         {f.handoff_ref && <span className="chip"><HandoffIcon size={12} />{f.handoff_ref}</span>}
       </div>
+
+      {/* The rarest trust signal an autonomous engine can show — kept tasteful. */}
+      {validated && <ValidatedRibbon verifiedBy={f.verified_by} />}
 
       {notice && (
         <Banner kind={notice.kind}>
@@ -120,69 +243,113 @@ function DetailDrawer({ finding, onClose, onChanged }) {
         </Banner>
       )}
 
-      <dl className="dl">
-        <dt>CWE</dt>
-        <dd>{f.cwe ? <span className="chip">{f.cwe}</span> : <span className="muted">—</span>}</dd>
-        <dt>Endpoint</dt>
-        <dd>
-          {f.endpoint ? (
-            <span className="row-tight" style={{ gap: 6, flexWrap: 'wrap' }}>
-              <span className="mono" style={{ fontSize: 12.5, wordBreak: 'break-all' }}>{f.endpoint}</span>
-              <CopyButton text={f.endpoint} />
-              {isUrl(f.endpoint) && (
-                <a className="iconbtn" href={f.endpoint} target="_blank" rel="noreferrer noopener" title="Open"><ExternalIcon size={15} /></a>
-              )}
-            </span>
-          ) : <span className="muted">—</span>}
-        </dd>
-        {ev.confidence != null && (<><dt>Confidence</dt><dd>{titleCase(String(ev.confidence))}</dd></>)}
-        <dt>Verified by</dt>
-        <dd className="muted">{f.verified_by || '—'}</dd>
-        <dt>Found</dt>
-        <dd>{fmtDate(f.created_at)} · <span className="muted">{relTime(f.created_at)}</span></dd>
-        <dt>Engagement</dt>
-        <dd className="mono muted" style={{ fontSize: 12 }}>{f.engagement_id || '—'}</dd>
-        <dt>Run</dt>
-        <dd style={{ fontSize: 12 }}>{f.run_id ? <Link className="mono" to={`/runs/${f.run_id}`} style={{ color: 'var(--accent-strong)' }}>{f.run_id}</Link> : <span className="mono muted">—</span>}</dd>
-      </dl>
+      {/* Story / Evidence toggle — the elegant explanation must never substitute for
+          the reproducible artifact, so keep the two zones visually distinct. */}
+      <div className="segmented" role="tablist" aria-label="Finding detail view">
+        <button role="tab" aria-selected={tab === 'story'} className={tab === 'story' ? 'is-active' : ''} onClick={() => setTab('story')}>
+          <span className="row-tight" style={{ gap: 6 }}><BugIcon size={13} />Story</span>
+        </button>
+        <button role="tab" aria-selected={tab === 'evidence'} className={tab === 'evidence' ? 'is-active' : ''} onClick={() => setTab('evidence')}>
+          <span className="row-tight" style={{ gap: 6 }}>
+            <FileIcon size={13} />Evidence
+            {artifactCount > 0 && <span className="chip chip--mini tnum">{artifactCount}</span>}
+          </span>
+        </button>
+      </div>
 
-      {remediation && (
-        <div>
-          <div className="label" style={{ marginBottom: 8 }}>Remediation</div>
-          <Banner kind="info"><div style={{ whiteSpace: 'pre-wrap' }}>{typeof remediation === 'string' ? remediation : JSON.stringify(remediation, null, 2)}</div></Banner>
+      {tab === 'story' ? (
+        <div role="tabpanel" aria-label="Story" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--s-5)' }}>
+          {/* The case: why this finding is here, in plain language. */}
+          <div>
+            <div className="label" style={{ marginBottom: 8 }}>The case</div>
+            <p className="text-2" style={{ lineHeight: 1.6, margin: 0 }}>{impact}</p>
+            <div className="row-tight" style={{ gap: 6, flexWrap: 'wrap', marginTop: 10 }}>
+              {f.cwe && <span className="chip">{f.cwe}</span>}
+              {host && <span className="chip" style={{ fontFamily: 'var(--mono)' }}>{host}</span>}
+            </div>
+          </div>
+
+          {remediation ? (
+            <div>
+              <div className="label" style={{ marginBottom: 8 }}>Remediation</div>
+              <Banner kind="info"><div style={{ whiteSpace: 'pre-wrap' }}>{typeof remediation === 'string' ? remediation : JSON.stringify(remediation, null, 2)}</div></Banner>
+            </div>
+          ) : null}
+
+          {chain && chain.length > 0 ? (
+            <div>
+              <div className="label" style={{ marginBottom: 12 }}><span className="row-tight"><ZapIcon size={13} style={{ color: 'var(--accent-strong)' }} />Exploit chain</span></div>
+              <ol className="chain" style={{ listStyle: 'none', margin: 0 }}>
+                {chain.map((step, i) => (
+                  <li key={i} className="chain__step">
+                    <span className="chain__num">{i + 1}</span>
+                    <div className="chain__label" style={{ wordBreak: 'break-word' }}>{typeof step === 'string' ? step : JSON.stringify(step)}</div>
+                  </li>
+                ))}
+              </ol>
+            </div>
+          ) : null}
+
+          {!remediation && !(chain && chain.length) && (
+            <p className="muted" style={{ fontSize: 13, margin: 0 }}>No exploit chain or remediation narrative recorded yet — see Evidence for the raw artifacts.</p>
+          )}
         </div>
-      )}
+      ) : (
+        <div role="tabpanel" aria-label="Evidence" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--s-5)' }}>
+          {/* Reproducible artifacts + provenance — the proof, kept apart from the story. */}
+          <dl className="dl">
+            <dt>Endpoint</dt>
+            <dd>
+              {f.endpoint ? (
+                <span className="row-tight" style={{ gap: 6, flexWrap: 'wrap' }}>
+                  <span className="mono" style={{ fontSize: 12.5, wordBreak: 'break-all' }}>{f.endpoint}</span>
+                  <CopyButton text={f.endpoint} />
+                  {isUrl(f.endpoint) && (
+                    <a className="iconbtn" href={f.endpoint} target="_blank" rel="noreferrer noopener" title="Open"><ExternalIcon size={15} /></a>
+                  )}
+                </span>
+              ) : <span className="muted">—</span>}
+            </dd>
+            <dt>CWE</dt>
+            <dd>{f.cwe ? <span className="chip">{f.cwe}</span> : <span className="muted">—</span>}</dd>
+            <dt>Confidence</dt>
+            <dd>{confidence != null && confidence !== '' ? <Confidence value={confidence} /> : <span className="muted">—</span>}</dd>
+            <dt>Verified by</dt>
+            <dd>{f.verified_by ? <span className="row-tight" style={{ gap: 6 }}><CircleCheckIcon size={14} style={{ color: 'var(--ok)' }} /><span className="mono" style={{ fontSize: 12 }}>{f.verified_by}</span></span> : <span className="muted">—</span>}</dd>
+            <dt>Found</dt>
+            <dd>{fmtDate(f.created_at)} · <span className="muted">{relTime(f.created_at)}</span></dd>
+            <dt>Engagement</dt>
+            <dd className="mono muted" style={{ fontSize: 12 }}>{f.engagement_id || '—'}</dd>
+            <dt>Run</dt>
+            <dd style={{ fontSize: 12 }}>{f.run_id ? <Link className="mono" to={`/runs/${f.run_id}`} style={{ color: 'var(--accent-strong)' }}>{f.run_id}</Link> : <span className="mono muted">—</span>}</dd>
+          </dl>
 
-      {chain && chain.length > 0 && (
-        <div>
-          <div className="label" style={{ marginBottom: 12 }}><span className="row-tight"><ZapIcon size={13} style={{ color: 'var(--accent-strong)' }} />Exploit chain</span></div>
-          <ol className="chain" style={{ listStyle: 'none', margin: 0 }}>
-            {chain.map((step, i) => (
-              <li key={i} className="chain__step">
-                <span className="chain__num">{i + 1}</span>
-                <div className="chain__label" style={{ wordBreak: 'break-word' }}>{typeof step === 'string' ? step : JSON.stringify(step)}</div>
-              </li>
-            ))}
-          </ol>
+          <CodeSection label="Proof of concept" text={f.poc} maxHeight={260} />
+          <CodeSection label="Payload" text={f.payload} />
+
+          {extraKeys.length > 0 && (
+            <CodeSection
+              label="Raw evidence"
+              text={JSON.stringify(extraKeys.reduce((o, k) => { o[k] = ev[k]; return o; }, {}), null, 2)}
+            />
+          )}
+
+          {!f.poc && !f.payload && extraKeys.length === 0 && (
+            <p className="muted" style={{ fontSize: 13, margin: 0 }}>No proof-of-concept, payload, or raw evidence attached to this finding.</p>
+          )}
         </div>
-      )}
-
-      <CodeSection label="Proof of concept" text={f.poc} maxHeight={260} />
-      <CodeSection label="Payload" text={f.payload} />
-
-      {extraKeys.length > 0 && (
-        <CodeSection
-          label="Evidence"
-          text={JSON.stringify(extraKeys.reduce((o, k) => { o[k] = ev[k]; return o; }, {}), null, 2)}
-        />
       )}
     </Drawer>
   );
 }
 
 export default function Findings() {
-  const [severity, setSeverity] = React.useState('ALL');
-  const [status, setStatus] = React.useState('ALL');
+  // Honor deep-links from the assistant / console (e.g. `/findings?status=NEW`,
+  // `?severity=CRITICAL`) so a suggested "review open findings" chip lands
+  // pre-filtered instead of on the full inbox.
+  const [params] = useSearchParams();
+  const [severity, setSeverity] = React.useState(() => (params.get('severity') || 'ALL').toUpperCase());
+  const [status, setStatus] = React.useState(() => (params.get('status') || 'ALL').toUpperCase());
   const [selected, setSelected] = React.useState(null);
 
   // Table respects filters.
@@ -214,9 +381,11 @@ export default function Findings() {
   const refreshAll = () => { reload(); reloadAll(); };
 
   return (
-    <div className="page">
+    <div className="page" data-section="findings">
       <PageHead
         title="Findings"
+        eyebrow="Vulnerabilities"
+        icon={<BugIcon />}
         subtitle="The confirmed-and-suspected findings across every engagement. Triage them here, then hand the confirmed ones to Brigade for remediation — Security-Ops finds, Brigade fixes."
       />
 
@@ -276,7 +445,7 @@ export default function Findings() {
           <BugIcon size={16} style={{ color: 'var(--muted)' }} />
           <h2>Findings</h2>
           <div className="spacer" />
-          <span className="muted" style={{ fontSize: 12 }}>{loading ? '—' : `${rows.length} shown`}</span>
+          <span className="muted" style={{ fontSize: 12 }}>{loading ? '—' : `Highest severity first · ${rows.length} shown`}</span>
         </div>
         {loading ? (
           <SkeletonRows rows={6} cols={6} />
@@ -313,8 +482,16 @@ export default function Findings() {
                       <StatusBadge value={f.status} />
                       {f.status === 'HANDED_OFF' && f.handoff_ref && <span className="chip">{f.handoff_ref}</span>}
                     </div>
+                    <ConfMark value={f.evidence?.confidence} />
                   </td>
-                  <td className="muted">{f.verified_by || '—'}</td>
+                  <td>
+                    {f.verified_by ? (
+                      <span className="row-tight" style={{ gap: 6 }} title={`Re-checked and confirmed by ${f.verified_by}`}>
+                        <CircleCheckIcon size={13} style={{ color: 'var(--ok)', flex: 'none' }} />
+                        <span className="mono" style={{ fontSize: 11, color: 'var(--text-2)' }}>{f.verified_by}</span>
+                      </span>
+                    ) : <span className="muted">—</span>}
+                  </td>
                   <td className="muted nowrap">{relTime(f.created_at)}</td>
                   <td className="col-actions"><ChevronRightIcon size={16} style={{ color: 'var(--faint)' }} /></td>
                 </tr>

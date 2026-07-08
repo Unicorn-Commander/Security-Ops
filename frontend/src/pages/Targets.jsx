@@ -5,6 +5,7 @@
 import React from 'react';
 import { api } from '../lib/api.js';
 import { useResource, useMutation } from '../lib/hooks.js';
+import { useSearchParams } from 'react-router-dom';
 import { PageHead, StatusBadge, EmptyState, SkeletonRows, ErrorBanner, Banner, Drawer, useToast, CopyButton, rowActivate } from '../components/ui.jsx';
 import {
   TargetIcon, GlobeIcon, ServerIcon, GitIcon, PlusIcon, KeyIcon, CheckIcon,
@@ -17,9 +18,14 @@ const KIND_ICON = { DOMAIN: GlobeIcon, URL: GlobeIcon, IP_RANGE: ServerIcon, REP
 // OWNED first — the self-owned escape hatch (your own suite). Proof methods are verified live by the server.
 const METHODS = ['OWNED', 'CHECKBOX', 'TYPED_CONFIRMATION', 'DNS_TXT', 'FILE_DROP', 'HTTP_HEADER'];
 const PROOF_METHODS = ['DNS_TXT', 'FILE_DROP', 'HTTP_HEADER'];
+// Admin-only "authorized-operator" methods that skip live ownership proof for a
+// recorded human authorization. Appended to the picker only when /me capabilities
+// say the caller may use them (admin + install-switch). Justification-required.
+const PRIVILEGED_METHODS = ['SELF_ATTESTED', 'BREAK_GLASS'];
 const METHOD_LABEL = {
   OWNED: 'Owned', CHECKBOX: 'Checkbox', TYPED_CONFIRMATION: 'Typed',
   DNS_TXT: 'DNS TXT', FILE_DROP: 'File drop', HTTP_HEADER: 'HTTP header',
+  SELF_ATTESTED: 'Self-attest (admin)', BREAK_GLASS: 'Break-glass (admin)',
 };
 
 function KindIcon({ kind, ...rest }) {
@@ -143,11 +149,27 @@ function AttestDrawer({ target, onClose, onAttested }) {
   const [method, setMethod] = React.useState(target.attestation_method || 'OWNED');
   const [ack, setAck] = React.useState(false);
   const [typed, setTyped] = React.useState('');
+  const [justification, setJustification] = React.useState('');
   const [expiresAt, setExpiresAt] = React.useState('');
   const { run, busy, error } = useMutation();
 
+  // Admin-only methods are offered only when the deployment + role permit them.
+  const [caps, setCaps] = React.useState(null);
+  React.useEffect(() => {
+    let live = true;
+    api('/me').then((m) => { if (live) setCaps(m.capabilities || {}); }).catch(() => {});
+    return () => { live = false; };
+  }, []);
+  const methods = [
+    ...METHODS,
+    ...(caps?.self_attest ? ['SELF_ATTESTED'] : []),
+    ...(caps?.break_glass ? ['BREAK_GLASS'] : []),
+  ];
+
   const isProof = PROOF_METHODS.includes(method);
   const isTyped = method === 'TYPED_CONFIRMATION';
+  const isPrivileged = PRIVILEGED_METHODS.includes(method);
+  const isBreakGlass = method === 'BREAK_GLASS';
 
   // Lazily fetch the per-target challenge the first time a proof method is picked.
   const [challenge, setChallenge] = React.useState(null);
@@ -165,13 +187,15 @@ function AttestDrawer({ target, onClose, onAttested }) {
   }, [isProof, challenge, chLoading, target.id]);
 
   const typedOk = !isTyped || typed.trim() === target.value;
-  const canSubmit = ack && typedOk && !busy;
+  const justOk = !isPrivileged || justification.trim().length >= 8;
+  const canSubmit = ack && typedOk && justOk && !busy;
 
   async function submit(e) {
     e.preventDefault();
     if (!canSubmit) return;
     const body = { method, checkbox_ack: ack };
     if (typed.trim()) body.typed_confirmation = typed.trim();
+    if (isPrivileged && justification.trim()) body.justification = justification.trim();
     if (expiresAt) body.expires_at = new Date(expiresAt).toISOString();
     try {
       await run(`/targets/${target.id}/attest`, { method: 'POST', body });
@@ -208,14 +232,45 @@ function AttestDrawer({ target, onClose, onAttested }) {
         <div className="field">
           <label className="label">Attestation method</label>
           <select className="select" value={method} onChange={(e) => setMethod(e.target.value)}>
-            {METHODS.map((m) => <option key={m} value={m}>{METHOD_LABEL[m]} — {m}</option>)}
+            {methods.map((m) => <option key={m} value={m}>{METHOD_LABEL[m]} — {m}</option>)}
           </select>
           <span className="hint">
-            {isProof
-              ? 'External asset — publish the proof below, then attest. The server verifies ownership live.'
-              : 'Self-owned attestation — acknowledge authorization to record it.'}
+            {isBreakGlass
+              ? 'Break-glass — authorizes this target with NO ownership proof. For authorized red-team / DFIR only. Admin-only, short-lived, and recorded to the immutable audit log.'
+              : isPrivileged
+                ? 'Self-attest — skips live ownership proof for a recorded admin authorization. Time-boxed and audited.'
+                : isProof
+                  ? 'External asset — publish the proof below, then attest. The server verifies ownership live.'
+                  : 'Self-owned attestation — acknowledge authorization to record it.'}
           </span>
         </div>
+
+        {isBreakGlass && (
+          <Banner kind="warn">
+            <b>Break-glass bypasses the ownership proof.</b> Only authorize targets you are
+            lawfully permitted to test (owned infra, signed engagement, or an active
+            incident-response mandate). This grant is logged under its own audit action
+            with your justification and expires automatically.
+          </Banner>
+        )}
+
+        {isPrivileged && (
+          <div className="field">
+            <label className="label">Authorization justification <span className="muted" style={{ textTransform: 'none', letterSpacing: 0, color: 'var(--warn-strong, var(--warn))' }}>· required</span></label>
+            <textarea
+              className="input" rows={3} value={justification}
+              onChange={(e) => setJustification(e.target.value)}
+              placeholder={isBreakGlass
+                ? 'e.g. DFIR: contain compromised host per incident IR-77 — authorized by CISO'
+                : 'e.g. Owned infra: internal staging cluster; engagement SOW-2231'}
+            />
+            <span className="hint">
+              {justification.trim().length < 8
+                ? 'Recorded verbatim in the audit trail. Minimum 8 characters.'
+                : 'Recorded verbatim in the audit trail as the basis for this authorization.'}
+            </span>
+          </div>
+        )}
 
         {isProof && <ProofBlock method={method} challenge={challenge} loading={chLoading} error={chError} />}
 
@@ -246,14 +301,29 @@ function AttestDrawer({ target, onClose, onAttested }) {
 /* --------------------------------------------------------------- Page */
 export default function Targets() {
   const { data, loading, error, reload } = useResource(() => api('/targets?limit=200'), []);
-  const [registering, setRegistering] = React.useState(false);
+  const [params, setParams] = useSearchParams();
+  const [registering, setRegistering] = React.useState(() => params.has('new'));
   const [selected, setSelected] = React.useState(null);
   const items = data?.items || [];
   const attested = items.filter((t) => t.attestation_status === 'ATTESTED').length;
 
+  // Onboarding deep-links: ?new=1 opens the register drawer; ?attest=1 opens the
+  // first not-yet-attested target's drawer (or register if none exist yet).
+  const deepLinked = React.useRef(false);
+  React.useEffect(() => {
+    if (deepLinked.current) return;
+    if (params.has('new')) { deepLinked.current = true; setRegistering(true); params.delete('new'); setParams(params, { replace: true }); return; }
+    if (params.has('attest') && data) {
+      deepLinked.current = true;
+      const pending = items.find((t) => t.attestation_status !== 'ATTESTED');
+      if (pending) setSelected(pending); else setRegistering(true);
+      params.delete('attest'); setParams(params, { replace: true });
+    }
+  }, [data, items, params, setParams]);
+
   return (
-    <div className="page">
-      <PageHead title="Authorized targets"
+    <div className="page" data-section="targets">
+      <PageHead title="Authorized targets" eyebrow="Assets" icon={<TargetIcon />}
         subtitle="The registry the authorization gate consults. A target is only scannable once it passes attestation — valid, unexpired, and not revoked. External domains, URLs and IP ranges need ownership proof; self-owned assets use OWNED."
         actions={<button className="btn btn--primary" onClick={() => setRegistering(true)}><PlusIcon size={15} />Register target</button>} />
 

@@ -1,0 +1,43 @@
+/* Settings page — layout-only styles. Colors come from CSS variables (theme-safe:
+ * works in both light and dark). All classes are prefixed `set-`. */
+
+.set-stack { gap: var(--s-5); }
+
+/* Theme segmented control — icon + label per option (base .segmented handles the
+ * chrome; we only add the icon/label alignment the radio buttons need). */
+.set-seg button { display: inline-flex; align-items: center; gap: 6px; }
+.set-seg button svg { width: 14px; height: 14px; }
+
+/* Identity definition list (Account + Developer rows). */
+.set-dl { display: flex; flex-direction: column; }
+.set-idrow {
+  display: grid;
+  grid-template-columns: 160px 1fr;
+  gap: var(--s-4);
+  align-items: center;
+  padding: var(--s-3) 0;
+  border-bottom: 1px solid var(--border);
+}
+.set-dl .set-idrow:last-child { border-bottom: none; }
+.set-idrow__k { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.set-idrow__v { min-width: 0; font-size: 14px; color: var(--text); word-break: break-word; }
+
+.set-chips { flex-wrap: wrap; gap: 6px; }
+
+/* Freshly-minted token — make the plaintext read as important-but-transient. */
+.set-token { font-size: 13px; color: var(--text); }
+
+/* Developer — collapsed, subtle affordance. */
+.set-dev { background: var(--surface); }
+.set-dev__toggle {
+  display: flex; align-items: center; gap: var(--s-3); width: 100%;
+  padding: var(--s-4) var(--s-5);
+  font-size: 14px; font-weight: 560; color: var(--text-2);
+  border-radius: var(--r-lg);
+}
+.set-dev__toggle:hover { color: var(--text); }
+.set-dev__toggle:focus-visible { box-shadow: var(--ring); }
+
+@media (max-width: 640px) {
+  .set-idrow { grid-template-columns: 1fr; gap: 4px; align-items: start; }
+}

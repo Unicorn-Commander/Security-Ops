@@ -3,15 +3,32 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="color-scheme" content="dark" />
+    <meta name="color-scheme" content="light dark" />
     <meta name="description" content="Security-Ops — authorized penetration-testing console for the Unicorn Commander suite." />
     <title>Security-Ops Console</title>
+    <script>
+      /* No-flash theme: resolve the saved preference (or the OS default) and stamp
+         data-theme BEFORE first paint, so a light-mode user never flashes dark.
+         Mirrors src/lib/theme.js — keep the storage key + logic in sync. */
+      (function () {
+        try {
+          var p = localStorage.getItem('secops_theme');
+          if (p !== 'light' && p !== 'dark' && p !== 'system') p = 'system';
+          var eff = (p === 'light' || p === 'dark') ? p
+            : (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+          var el = document.documentElement;
+          el.setAttribute('data-theme', eff);
+          el.style.colorScheme = eff;
+          el.style.setProperty('--boot-bg', eff === 'light' ? '#f5f7fb' : '#08090e');
+        } catch (e) {}
+      })();
+    </script>
     <style>
       /* Anti-flash base only — the full design system loads via the app's
          imported stylesheets (tokens.css / base.css / components.css). */
-      html, body, #root { height: 100%; margin: 0; background: #08090e; }
+      html, body, #root { height: 100%; margin: 0; background: var(--boot-bg, #08090e); }
       #boot { position: fixed; inset: 0; display: grid; place-items: center; }
-      #boot i { width: 26px; height: 26px; border-radius: 50%; border: 2px solid #212739; border-top-color: #6d6bff; animation: bs .7s linear infinite; }
+      #boot i { width: 26px; height: 26px; border-radius: 50%; border: 2px solid rgba(120,130,160,0.35); border-top-color: #6d6bff; animation: bs .7s linear infinite; }
       @keyframes bs { to { transform: rotate(360deg); } }
     </style>
   </head>

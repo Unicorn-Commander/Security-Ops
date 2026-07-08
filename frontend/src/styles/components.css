@@ -101,6 +101,9 @@
 .card__head h2 { font-size: 14px; }
 .card__head .spacer { flex: 1; }
 .card__body { padding: var(--s-5); }
+/* A slim sub-header strip inside a card — a padded row closed by a bottom hairline. */
+.card__strip { display: flex; align-items: center; flex-wrap: wrap; gap: var(--s-4);
+  padding: var(--s-3) var(--s-5); border-bottom: 1px solid var(--border); font-size: 12px; }
 .stack { display: flex; flex-direction: column; gap: var(--s-5); }
 .grid { display: grid; gap: var(--s-4); }
 .grid-2 { grid-template-columns: repeat(2, 1fr); }
@@ -179,7 +182,38 @@
 
 /* Severity pills (ordered heat ramp). */
 .sev { display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 9px 0 8px; border-radius: var(--r-pill); font-size: 11px; font-weight: 640; letter-spacing: 0.02em; border: 1px solid transparent; }
-.sev .bar { width: 3px; height: 11px; border-radius: 2px; background: currentColor; flex: none; }
+/* Signal-bars severity meter: ascending bars, `rank` of 5 filled with the
+ * severity hue, the rest recessive. Ordinal shape encoding so MEDIUM vs HIGH
+ * (the CVD-tricky pair) is legible without relying on color. */
+.sevbars { display: inline-flex; align-items: flex-end; gap: 1.5px; height: 12px; flex: none; }
+.sevbars i { width: 2.5px; border-radius: 1px; background: currentColor; opacity: 0.24; transition: opacity var(--dur-1); }
+.sevbars i:nth-child(1) { height: 4px; }
+.sevbars i:nth-child(2) { height: 6px; }
+.sevbars i:nth-child(3) { height: 8px; }
+.sevbars i:nth-child(4) { height: 10px; }
+.sevbars i:nth-child(5) { height: 12px; }
+.sevbars i.on { opacity: 1; }
+
+/* Confidence chip — the "how sure" axis. Diamond mark (rotated square) so it
+   reads distinct from the severity signal-bars and the round status dot. */
+.conf { display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 9px; border-radius: var(--r-pill);
+  font-size: 11px; font-weight: 600; letter-spacing: 0.01em; border: 1px solid var(--border-2);
+  color: var(--text-2); background: var(--surface-3); white-space: nowrap; }
+.conf__mark { width: 7px; height: 7px; border-radius: 1.5px; transform: rotate(45deg); flex: none; background: currentColor; }
+.conf--strong { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 32%, var(--border-2)); }
+.conf--mid    { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 28%, var(--border-2)); }
+.conf--low    { color: var(--muted); }
+/* Table-density confidence mark — diamond + one word, no pill chrome. Inline
+   `color` drives the diamond (via .conf__mark currentColor); the word stays muted. */
+.conf--compact { height: auto; padding: 0; margin-top: 4px; gap: 5px; border: none; background: none;
+  font-size: 11px; font-weight: 400; letter-spacing: normal; }
+.conf--compact .conf__label { color: var(--muted); }
+
+/* Freshness stamp — live "updated Ns ago" + pause toggle on streaming surfaces. */
+.freshness { display: inline-flex; align-items: center; gap: 10px; }
+.freshness__toggle { height: 22px; padding: 0 9px; font-size: 11px; font-weight: 560; color: var(--text-2);
+  border: 1px solid var(--border-2); border-radius: var(--r-pill); background: var(--surface-2); }
+.freshness__toggle:hover { color: var(--text); border-color: var(--border-strong); }
 .sev--info     { color: var(--sev-info);     background: var(--sev-info-soft); }
 .sev--low      { color: var(--sev-low);      background: var(--sev-low-soft); }
 .sev--medium   { color: var(--sev-medium);   background: var(--sev-medium-soft); }
@@ -190,6 +224,20 @@
 .statusdot { display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; font-weight: 560; color: var(--text-2); }
 .statusdot i { width: 8px; height: 8px; border-radius: 50%; flex: none; box-shadow: 0 0 0 3px transparent; }
 .statusdot i.live { animation: so-pulse-ring 1.6s var(--ease) infinite; }
+
+/* Run phase strip — the honest, data-derived run pipeline (RunDetail). Nodes reuse
+   .statusdot (round dot + live pulse); data-state drives node ink + dot hue. */
+.phasestrip { display: flex; align-items: center; flex-wrap: wrap; gap: 0; }
+.phasestrip__link { width: 26px; height: 2px; border-radius: 2px; background: var(--border-2); flex: none; margin: 0 6px; }
+.phase-node { font-weight: 560; }
+.phase-node[data-state="done"]   { color: var(--text-2); }
+.phase-node[data-state="active"] { color: var(--text); font-weight: 640; }
+.phase-node[data-state="error"]  { color: var(--danger-strong); }
+.phase-node[data-state="todo"]   { color: var(--muted); }
+.phase-node[data-state="done"] i   { background: var(--ok); }
+.phase-node[data-state="active"] i { background: var(--info); }
+.phase-node[data-state="error"] i  { background: var(--danger); }
+.phase-node[data-state="todo"] i   { background: var(--faint); }
 
 /* =========================================================================
    Fields
@@ -315,6 +363,12 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
 .dl dt { color: var(--muted); font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.05em; }
 .dl dd { color: var(--text); min-width: 0; word-break: break-word; }
 
+/* Token key/value rows for the run cost panel (RunDetail). */
+.usage-list { display: flex; flex-direction: column; gap: 4px; }
+.usage-row { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px; font-size: 12px; }
+.usage-row__k { color: var(--muted); white-space: nowrap; }
+.usage-row__v { color: var(--text); font-weight: 560; font-variant-numeric: tabular-nums; }
+
 /* code block */
 .code {
   font-family: var(--mono); font-size: 12px; line-height: 1.6;
@@ -376,6 +430,26 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
 .verdict--allow .verdict__title { color: var(--ok); }
 .verdict--deny .verdict__title { color: var(--danger-strong); }
 
+/* Earned "Validated" trust callout — surface-inset panel + soft ok icon chip. */
+.trust-ribbon { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: var(--r);
+  background: var(--surface-inset); border: 1px solid var(--border-2); color: var(--text-2); font-size: 12.5px; line-height: 1.5; }
+.trust-ribbon__icon { display: grid; place-items: center; width: 26px; height: 26px; border-radius: 8px; flex: none;
+  background: var(--ok-soft); color: var(--ok); }
+
+/* Severity-toned hero callout — the single dominant posture read (Overview).
+   data-tone sets --tone-fg/-bg/-bd; children read var(--tone-fg) for their ink. */
+.hero-risk {
+  flex: none; min-width: 232px; max-width: 300px; align-self: stretch;
+  display: flex; flex-direction: column; justify-content: center; gap: 7px;
+  padding: var(--s-4) var(--s-5); border-radius: var(--r-lg);
+  border: 1px solid var(--tone-bd); background: var(--tone-bg);
+}
+.hero-risk[data-tone="danger"] { --tone-fg: var(--danger-strong); --tone-bg: var(--danger-soft);   --tone-bd: color-mix(in srgb, var(--danger) 34%, var(--border-2)); }
+.hero-risk[data-tone="warn"]   { --tone-fg: var(--warn);          --tone-bg: var(--warn-soft);     --tone-bd: color-mix(in srgb, var(--warn) 30%, var(--border-2)); }
+.hero-risk[data-tone="info"]   { --tone-fg: var(--info);          --tone-bg: var(--info-soft);     --tone-bd: color-mix(in srgb, var(--info) 30%, var(--border-2)); }
+.hero-risk[data-tone="ok"]     { --tone-fg: var(--ok);            --tone-bg: var(--ok-soft);       --tone-bd: color-mix(in srgb, var(--ok) 30%, var(--border-2)); }
+.hero-risk[data-tone="muted"]  { --tone-fg: var(--muted);         --tone-bg: var(--surface-inset); --tone-bd: var(--border-2); }
+
 /* exploit chain — numbered steps on a connecting spine (finding drawer) */
 .chain { position: relative; display: flex; flex-direction: column; gap: 12px; padding-left: 2px; }
 .chain::before { content: ""; position: absolute; left: 12px; top: 6px; bottom: 12px; width: 2px; background: linear-gradient(180deg, var(--accent), var(--accent-soft)); border-radius: 2px; }
@@ -392,6 +466,94 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
 .pillbar button { height: 26px; padding: 0 12px; border-radius: var(--r-pill); font-size: 12px; font-weight: 540; color: var(--muted); }
 .pillbar button.is-active { background: var(--surface-4); color: var(--text); }
 .chip { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 10px; border-radius: var(--r-pill); background: var(--surface-3); border: 1px solid var(--border-2); font-size: 12px; color: var(--text-2); font-family: var(--mono); }
+.chip--ok { color: var(--ok); border-color: var(--ok-soft); }
+.chip--mini { height: 18px; padding: 0 6px; font-size: 10.5px; }
+
+/* =========================================================================
+   Section identity — meaningful color per workspace area
+   ========================================================================= */
+/* Rebind the generic --section vars from a data-section scope. Set on nav
+   links and on each page's root, so section-aware components pick up the hue. */
+[data-section="overview"]    { --section: var(--sec-overview);    --section-soft: var(--sec-overview-soft); }
+[data-section="engagements"] { --section: var(--sec-engagements); --section-soft: var(--sec-engagements-soft); }
+[data-section="targets"]     { --section: var(--sec-targets);     --section-soft: var(--sec-targets-soft); }
+[data-section="runs"]        { --section: var(--sec-runs);        --section-soft: var(--sec-runs-soft); }
+[data-section="findings"]    { --section: var(--sec-findings);    --section-soft: var(--sec-findings-soft); }
+[data-section="agent"]       { --section: var(--sec-agent);       --section-soft: var(--sec-agent-soft); }
+
+/* Nav: each item wears its section hue (icon tint + hover + active). */
+.nav__link svg { color: var(--section); opacity: 0.82; transition: opacity var(--dur-1), color var(--dur-1); }
+.nav__link:hover { background: var(--section-soft); color: var(--text); }
+.nav__link:hover svg { opacity: 1; }
+.nav__link.is-active { background: var(--section-soft); color: #fff; font-weight: 600; }
+.nav__link.is-active svg { opacity: 1; color: var(--section); }
+.nav__link.is-active::before { background: var(--section); box-shadow: 0 0 12px var(--section); }
+.nav__link.is-active .nav__count { color: var(--section); }
+.nav__count {
+  min-width: 20px; height: 18px; padding: 0 6px; border-radius: var(--r-pill);
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--surface-3); color: var(--muted); font-size: 10.5px; font-weight: 640;
+}
+.nav__link.is-active .nav__count { background: var(--section-soft); }
+
+/* Page header: a section-tinted icon chip + hue-aware title underline. */
+.page__ic {
+  width: 36px; height: 36px; border-radius: 11px; flex: none;
+  display: grid; place-items: center; color: var(--section);
+  background: var(--section-soft);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--section) 26%, transparent);
+}
+.page__ic svg { width: 19px; height: 19px; }
+.page__eyebrow {
+  font-size: 10.5px; font-weight: 680; text-transform: uppercase; letter-spacing: 0.11em;
+  color: var(--section); display: inline-flex; align-items: center; gap: 7px; margin-bottom: 5px;
+}
+.page__eyebrow::before { content: ""; width: 14px; height: 2px; border-radius: 2px; background: var(--section); }
+
+/* Section-tinted stat tile: glow + top accent adopt the active section hue. */
+.tile--section { border-color: color-mix(in srgb, var(--section) 22%, var(--border)); }
+.tile--section::before { background: linear-gradient(90deg, transparent, var(--section), transparent); opacity: 0.5; }
+.tile--section::after {
+  content: ""; position: absolute; right: -30px; top: -30px; width: 130px; height: 130px;
+  background: radial-gradient(circle, var(--section-soft), transparent 70%); pointer-events: none;
+}
+.tile--section .tile__label svg { color: var(--section); opacity: 0.9; }
+
+/* =========================================================================
+   Tooltip (hover + keyboard-focus, accessible)
+   ========================================================================= */
+.tt { position: relative; display: inline-flex; }
+.tt__pop {
+  position: absolute; z-index: 300; left: 50%; bottom: calc(100% + 9px);
+  transform: translateX(-50%) translateY(3px) scale(0.97);
+  min-width: max-content; max-width: 260px; width: max-content;
+  padding: 7px 10px; border-radius: var(--r-sm);
+  background: var(--surface-4); color: var(--text);
+  border: 1px solid var(--border-strong); box-shadow: var(--shadow-lg);
+  font-size: 12px; line-height: 1.45; font-weight: 500; text-align: left; white-space: normal;
+  opacity: 0; pointer-events: none;
+  transition: opacity var(--dur-1) var(--ease), transform var(--dur-1) var(--ease-out);
+}
+.tt__pop small { display: block; color: var(--muted); font-size: 11px; margin-top: 2px; font-weight: 500; }
+.tt__pop::after {
+  content: ""; position: absolute; top: 100%; left: 50%; transform: translateX(-50%);
+  border: 5px solid transparent; border-top-color: var(--surface-4);
+}
+.tt:hover > .tt__pop, .tt:focus-within > .tt__pop { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
+.tt--right > .tt__pop { left: 0; transform: translateX(0) translateY(3px) scale(0.97); }
+.tt--right:hover > .tt__pop, .tt--right:focus-within > .tt__pop { transform: translateX(0) translateY(0) scale(1); }
+.tt--right > .tt__pop::after { left: 16px; }
+.tt--below > .tt__pop { bottom: auto; top: calc(100% + 9px); }
+.tt--below > .tt__pop::after { top: auto; bottom: 100%; border-top-color: transparent; border-bottom-color: var(--surface-4); }
+@media (prefers-reduced-motion: reduce) { .tt__pop { transition: opacity var(--dur-1); } }
+
+/* An unobtrusive help affordance — a dotted-underlined term or a tiny (?) glyph. */
+.help-dot {
+  display: inline-grid; place-items: center; width: 15px; height: 15px; border-radius: 50%;
+  font-size: 10px; font-weight: 700; color: var(--muted);
+  border: 1px solid var(--border-strong); cursor: help; flex: none;
+}
+.help-dot:hover { color: var(--section); border-color: var(--section); }
 
 /* =========================================================================
    Responsive
@@ -400,10 +562,79 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
   .grid-4 { grid-template-columns: repeat(2, 1fr); }
   .grid-3 { grid-template-columns: 1fr; }
 }
+/* Mobile nav scrim — dims content + closes the drawer on outside tap. Rendered
+ * only while the sidebar is open (App.jsx); hidden above the mobile breakpoint so
+ * the desktop layout is never dimmed. */
+.shell__scrim { display: none; }
 @media (max-width: 860px) {
   .shell { grid-template-columns: 1fr; }
   .sidebar { position: fixed; z-index: 120; width: var(--sidebar-w); transform: translateX(-100%); transition: transform var(--dur-3) var(--ease-out); }
   .sidebar.is-open { transform: none; }
+  .shell__scrim {
+    display: block; position: fixed; inset: 0; z-index: 110;
+    background: rgba(4, 6, 12, 0.55); backdrop-filter: blur(2px);
+    animation: so-fade var(--dur-2) ease both;
+  }
   .grid-2, .grid-4 { grid-template-columns: 1fr; }
   .page { padding: var(--s-5) var(--s-4) var(--s-8); }
+}
+
+/* =========================================================================
+   Account menu (topbar) — identity, org/entitlement, settings, sign out
+   ========================================================================= */
+.acct__btn {
+  display: inline-flex; align-items: center; gap: 8px;
+  height: 34px; padding: 0 8px 0 6px; border-radius: var(--r-pill);
+  border: 1px solid var(--border-2); background: var(--surface-2); color: var(--text);
+  transition: background var(--dur-1), border-color var(--dur-1);
+}
+.acct__btn:hover { background: var(--surface-3); border-color: var(--border-strong); }
+.acct__avatar {
+  display: inline-grid; place-items: center; width: 24px; height: 24px; flex: none;
+  border-radius: 50%; background: var(--aurora); color: #fff;
+  font-size: 10.5px; font-weight: 700; letter-spacing: 0.02em;
+}
+.acct__avatar--lg { width: 38px; height: 38px; font-size: 15px; }
+.acct__name {
+  font-size: 12.5px; font-weight: 600; max-width: 130px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+@media (max-width: 620px) { .acct__name { display: none; } }
+
+.acct__menu {
+  position: absolute; right: 0; top: 42px; width: 268px; z-index: 50;
+  padding: 6px; box-shadow: var(--shadow-lg);
+}
+.acct__head { display: flex; gap: 10px; align-items: center; padding: 8px 8px 10px; }
+.acct__head-name { font-size: 13.5px; font-weight: 640; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.acct__head-mail { font-size: 11.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.acct__org { margin: 0 4px 4px; padding: 8px 10px; border-radius: var(--r-sm); background: var(--surface-2); border: 1px solid var(--border); }
+.acct__org-name { font-size: 12.5px; font-weight: 600; color: var(--text); margin-top: 2px; }
+.acct__sep { height: 1px; background: var(--border); margin: 5px 4px; }
+.acct__item {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  padding: 8px 10px; border-radius: var(--r-sm);
+  font-size: 13px; color: var(--text-2); text-align: left;
+  transition: background var(--dur-1), color var(--dur-1);
+}
+.acct__item:hover { background: var(--surface-3); color: var(--text); }
+.acct__item svg { color: var(--muted); }
+.acct__item:hover svg { color: var(--text); }
+.acct__item--danger:hover { background: var(--danger-soft); color: var(--danger-strong); }
+.acct__item--danger:hover svg { color: var(--danger-strong); }
+
+/* =========================================================================
+   Light-theme component fixes
+   A few components use an intentionally-translucent DARK "glass" background or a
+   white shimmer that only reads on dark surfaces. The token overrides in
+   tokens.css can't reach these hardcoded values, so re-point them for light here.
+   ========================================================================= */
+:root[data-theme="light"] .sidebar {
+  background: linear-gradient(180deg, #ffffff, #f4f6fc);
+}
+:root[data-theme="light"] .topbar {
+  background: rgba(255, 255, 255, 0.82);
+}
+:root[data-theme="light"] .skel::after {
+  background: linear-gradient(90deg, transparent, rgba(16, 22, 44, 0.06), transparent);
 }

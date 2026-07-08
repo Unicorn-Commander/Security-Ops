@@ -125,7 +125,7 @@ export default function Runs() {
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
   const [status, setStatus] = React.useState('');
-  const [starting, setStarting] = React.useState(() => params.has('engagement'));
+  const [starting, setStarting] = React.useState(() => params.has('engagement') || params.has('new'));
   const prefill = params.get('engagement') || '';
 
   const { data, loading, error, reload } = useResource(
@@ -143,8 +143,8 @@ export default function Runs() {
   }
 
   return (
-    <div className="page">
-      <PageHead title="Runs"
+    <div className="page" data-section="runs">
+      <PageHead title="Runs" eyebrow="Engine" icon={<PlayIcon />}
         subtitle="Every target is authorization-checked by the gate before a run is created. A denial records an audit event and starts nothing."
         actions={<button className="btn btn--primary" onClick={() => setStarting(true)}><PlayIcon size={13} />Start run</button>} />
 

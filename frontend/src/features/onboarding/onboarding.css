@@ -1,0 +1,200 @@
+/* Onboarding — first-run overlay + Overview "Get started" checklist.
+ * Uses only design tokens from tokens.css. Reduced-motion is respected globally
+ * (tokens.css caps all animation/transition durations) and reinforced locally. */
+
+/* ============================ Full-screen flow ============================ */
+.ob {
+  position: fixed; z-index: 100; top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  width: min(820px, calc(100vw - 28px));
+  max-height: calc(100vh - 28px);
+  display: grid; grid-template-columns: 232px 1fr;
+  background: linear-gradient(180deg, var(--surface-2), var(--surface));
+  border: 1px solid var(--border-2); border-radius: var(--r-xl);
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+  animation: ob-in var(--dur-3) var(--ease-out) both;
+}
+@keyframes ob-in { from { opacity: 0; transform: translate(-50%, -46%) scale(0.98); } to { opacity: 1; transform: translate(-50%, -50%) scale(1); } }
+
+/* ---- Left rail ---- */
+.ob__rail {
+  display: flex; flex-direction: column;
+  padding: var(--s-6) var(--s-5);
+  background:
+    radial-gradient(120% 60% at 0% 0%, var(--accent-softer), transparent 60%),
+    var(--surface-inset);
+  border-right: 1px solid var(--border);
+}
+.ob__brand { display: flex; align-items: center; gap: 9px; margin-bottom: var(--s-7); }
+.ob__brand-mark {
+  width: 30px; height: 30px; border-radius: 9px; flex: none;
+  display: grid; place-items: center; color: var(--accent-ink);
+  background: var(--aurora); box-shadow: var(--shadow-glow);
+}
+.ob__brand-name { font-weight: 640; font-size: 13.5px; letter-spacing: -0.01em; }
+
+.ob__steps { list-style: none; margin: 0; padding: 0; position: relative; flex: 1; }
+/* vertical connector behind the nodes */
+.ob__steps::before {
+  content: ""; position: absolute; left: 13px; top: 12px; bottom: 12px; width: 2px;
+  background: var(--border-2); border-radius: 2px;
+}
+.ob__step { position: relative; }
+.ob__step-btn {
+  display: flex; align-items: center; gap: 11px;
+  width: 100%; padding: 9px 8px; margin: 2px 0;
+  background: none; border: 0; border-radius: var(--r-sm);
+  color: var(--muted); font: inherit; font-size: 13px; text-align: left; cursor: pointer;
+  transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease);
+}
+.ob__step-btn:hover { background: var(--surface-2); color: var(--text-2); }
+.ob__step-node {
+  position: relative; z-index: 1; flex: none;
+  width: 28px; height: 28px; border-radius: 50%;
+  display: grid; place-items: center;
+  background: var(--surface-3); border: 2px solid var(--border-2);
+  color: var(--muted); font-size: 12px; font-weight: 640; font-variant-numeric: tabular-nums;
+  transition: all var(--dur-2) var(--ease);
+}
+.ob__step-label { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.ob__step-tag {
+  font-size: 9.5px; font-weight: 660; letter-spacing: 0.04em; text-transform: uppercase;
+  color: var(--ok); background: var(--ok-soft); padding: 2px 6px; border-radius: var(--r-pill);
+}
+.ob__step.is-active .ob__step-btn { color: var(--text); }
+.ob__step.is-active .ob__step-node {
+  border-color: var(--accent); color: var(--accent-strong);
+  background: var(--accent-soft); box-shadow: 0 0 0 4px var(--accent-softer);
+}
+.ob__step.is-done .ob__step-node,
+.ob__step.is-past .ob__step-node {
+  border-color: var(--ok); color: var(--ok); background: var(--ok-soft);
+}
+.ob__step.is-done .ob__step-btn { color: var(--text-2); }
+
+.ob__rail-foot { margin-top: var(--s-5); }
+.ob__mini-track { height: 5px; border-radius: var(--r-pill); background: var(--surface-3); overflow: hidden; }
+.ob__mini-track > span { display: block; height: 100%; border-radius: inherit; background: var(--aurora); transition: width var(--dur-3) var(--ease-out); }
+.ob__mini-label { display: block; margin-top: 7px; font-size: 11px; color: var(--muted); }
+
+/* ---- Right content pane ---- */
+.ob__main { position: relative; padding: var(--s-7) var(--s-7) var(--s-5); overflow-y: auto; }
+.ob__close {
+  position: absolute; top: 14px; right: 14px; z-index: 2;
+  width: 32px; height: 32px; border-radius: var(--r-sm);
+  display: grid; place-items: center;
+  background: var(--surface-3); border: 1px solid var(--border); color: var(--muted); cursor: pointer;
+  transition: all var(--dur-1) var(--ease);
+}
+.ob__close:hover { color: var(--text); background: var(--surface-4); border-color: var(--border-strong); }
+
+.ob__panel { display: flex; flex-direction: column; min-height: 380px; animation: ob-panel var(--dur-2) var(--ease-out) both; }
+@keyframes ob-panel { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+.ob__title { font-size: 21px; font-weight: 680; letter-spacing: -0.02em; line-height: 1.2; outline: none; }
+.ob__lede { color: var(--text-2); line-height: 1.62; margin-top: 10px; max-width: 46ch; font-size: 13.5px; }
+.ob__gate { color: var(--accent-strong); }
+
+/* Hero (welcome + done) */
+.ob__hero { text-align: left; }
+.ob__hero-art {
+  width: 148px; margin-bottom: var(--s-4);
+  border-radius: var(--r-lg); padding: var(--s-3);
+  background: var(--aurora-soft); border: 1px solid var(--border);
+}
+.ob__eyebrow {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 10.5px; font-weight: 660; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--accent-2); margin-bottom: 10px;
+}
+.ob__gatelist { list-style: none; margin: var(--s-6) 0 0; padding: 0; display: grid; gap: 10px; }
+.ob__gatelist li { display: flex; align-items: flex-start; gap: 10px; color: var(--text-2); font-size: 13px; line-height: 1.5; }
+.ob__gatelist b { color: var(--text); font-weight: 620; }
+.ob__dot { flex: none; width: 7px; height: 7px; margin-top: 6px; border-radius: 50%; background: var(--aurora); box-shadow: 0 0 0 3px var(--accent-softer); }
+
+/* Workflow step */
+.ob__step-head { display: flex; align-items: center; gap: 10px; margin-bottom: var(--s-4); }
+.ob__step-index { font-size: 11px; font-weight: 620; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+.ob__done-badge { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 620; color: var(--ok); background: var(--ok-soft); padding: 3px 9px; border-radius: var(--r-pill); }
+.ob__step-art {
+  width: 156px; height: 104px; margin-bottom: var(--s-5);
+  border-radius: var(--r-lg); display: grid; place-items: center;
+  background: var(--surface-inset); border: 1px solid var(--border);
+}
+.ob-art { width: 100%; height: 100%; display: block; }
+
+.ob__methods { display: flex; flex-wrap: wrap; gap: 8px; margin-top: var(--s-4); }
+.ob__method {
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 8px 11px; border-radius: var(--r-sm);
+  background: var(--surface-2); border: 1px solid var(--border);
+  font-size: 11px; color: var(--muted); line-height: 1.3;
+}
+.ob__method b { color: var(--accent-strong); font-size: 12px; font-weight: 620; }
+
+.ob__cta { margin-top: var(--s-6); }
+.ob__cta-note { display: block; margin-top: 8px; font-size: 11.5px; color: var(--muted); text-align: center; }
+
+/* Done recap */
+.ob__done-ring {
+  width: 66px; height: 66px; border-radius: 50%; margin-bottom: var(--s-5);
+  display: grid; place-items: center; color: var(--ok);
+  background: var(--ok-soft); border: 2px solid var(--ok);
+  box-shadow: 0 0 0 6px rgba(47,206,143,0.08);
+}
+.ob__recap { display: grid; gap: 6px; margin-top: var(--s-6); }
+.ob__recap-row {
+  display: flex; align-items: center; gap: 10px;
+  font-size: 13px; color: var(--text-2);
+}
+.ob__recap-node {
+  flex: none; width: 22px; height: 22px; border-radius: 50%;
+  display: grid; place-items: center; font-size: 11px; font-weight: 640;
+  background: var(--surface-3); border: 1px solid var(--border-2); color: var(--muted);
+}
+.ob__recap-row.is-done .ob__recap-node { background: var(--ok-soft); border-color: var(--ok); color: var(--ok); }
+.ob__recap-row.is-done { color: var(--text); }
+
+/* Footer actions — pushed to the bottom of the panel */
+.ob__actions { display: flex; align-items: center; gap: var(--s-2); margin-top: auto; padding-top: var(--s-6); }
+.ob__actions .spacer { flex: 1; }
+
+/* Narrow screens: rail becomes a slim top strip */
+@media (max-width: 620px) {
+  .ob { grid-template-columns: 1fr; max-height: calc(100vh - 16px); width: calc(100vw - 16px); }
+  .ob__rail { flex-direction: row; align-items: center; gap: var(--s-4); padding: var(--s-4) var(--s-5); border-right: 0; border-bottom: 1px solid var(--border); }
+  .ob__brand { margin-bottom: 0; }
+  .ob__brand-name, .ob__steps, .ob__rail-foot .ob__mini-label { display: none; }
+  .ob__rail-foot { margin: 0 0 0 auto; flex: 1; max-width: 160px; }
+  .ob__main { padding: var(--s-6) var(--s-5) var(--s-5); }
+  .ob__panel { min-height: 0; }
+}
+
+/* ============================ Get-started card =========================== */
+.ob-check__spark { color: var(--accent-strong); display: grid; place-items: center; }
+.ob-check__count { font-size: 12px; font-weight: 620; color: var(--muted); font-variant-numeric: tabular-nums; }
+.ob-check__body { display: flex; flex-direction: column; gap: var(--s-4); }
+.ob-check__track { height: 5px; border-radius: var(--r-pill); background: var(--surface-3); overflow: hidden; }
+.ob-check__track > span { display: block; height: 100%; border-radius: inherit; background: var(--aurora); transition: width var(--dur-3) var(--ease-out); }
+
+.ob-check__list { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.ob-check__row {
+  display: flex; align-items: center; gap: var(--s-3);
+  padding: 10px; border-radius: var(--r-sm);
+  border: 1px solid transparent;
+  transition: background var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease);
+}
+.ob-check__row:hover { background: var(--surface-2); border-color: var(--border); }
+.ob-check__node {
+  flex: none; width: 26px; height: 26px; border-radius: 50%;
+  display: grid; place-items: center; font-size: 12px; font-weight: 640;
+  background: var(--surface-3); border: 2px solid var(--border-2); color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.ob-check__row.is-done .ob-check__node { background: var(--ok-soft); border-color: var(--ok); color: var(--ok); }
+.ob-check__text { display: flex; flex-direction: column; min-width: 0; gap: 1px; flex: 1; }
+.ob-check__title { font-size: 13px; font-weight: 560; color: var(--text); }
+.ob-check__row.is-done .ob-check__title { color: var(--text-2); }
+.ob-check__lede { font-size: 11.5px; color: var(--muted); }
+.ob-check__cta { flex: none; }

@@ -5,9 +5,9 @@ import React from 'react';
 import { api } from '../lib/api.js';
 import { useResource, useMutation } from '../lib/hooks.js';
 import { PageHead, StatusBadge, EmptyState, SkeletonRows, ErrorBanner, Drawer, useToast, useConfirm, CopyButton, rowActivate } from '../components/ui.jsx';
-import { ShieldIcon, PlusIcon, PlayIcon, StopIcon, CrosshairIcon, CircleCheckIcon, CircleXIcon, FileIcon, CheckIcon, XIcon, ChevronRightIcon } from '../components/icons.jsx';
+import { ShieldIcon, PlusIcon, PlayIcon, StopIcon, CrosshairIcon, CircleCheckIcon, CircleXIcon, FileIcon, CheckIcon, XIcon, ChevronRightIcon, DownloadIcon } from '../components/icons.jsx';
 import { fmtDate, relTime, titleCase } from '../lib/format.js';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 
 const KINDS = ['DOMAIN', 'URL', 'IP_RANGE', 'REPO'];
 const PROFILES = ['hybrid-local-sweep-verify', 'local-sweep', 'local-verify', 'frontier-verify'];
@@ -143,6 +143,7 @@ function DetailDrawer({ engagement, onClose, onChanged }) {
   const confirm = useConfirm();
   const { run, busy } = useMutation();
   const [report, setReport] = React.useState(null);
+  const [genBusy, setGenBusy] = React.useState(false);
   const e = engagement;
   const inScopeN = (e.scope?.in_scope || []).length;
   const exclN = (e.scope?.exclusions || []).length;
@@ -169,8 +170,20 @@ function DetailDrawer({ engagement, onClose, onChanged }) {
     if (ok) act(`/engagements/${e.id}/stop`, 'Emergency stop engaged');
   }
   async function loadReport() {
+    setGenBusy(true);
     try { const md = await api(`/engagements/${e.id}/report?format=json`); setReport(typeof md === 'string' ? md : md.report_markdown); }
     catch (err) { toast({ kind: 'danger', title: err.message }); }
+    finally { setGenBusy(false); }
+  }
+  function downloadReport() {
+    if (!report) return;
+    const slug = (e.name || 'engagement').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'engagement';
+    const blob = new Blob([report], { type: 'text/markdown' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `security-ops-report-${slug}.md`;
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
   }
 
   return (
@@ -201,12 +214,17 @@ function DetailDrawer({ engagement, onClose, onChanged }) {
       <div>
         <div className="row between" style={{ marginBottom: 8 }}>
           <div className="label">Engagement report</div>
-          <button className="btn btn--sm btn--ghost" onClick={loadReport}><FileIcon size={14} />Generate</button>
+          <button className="btn btn--sm btn--ghost" onClick={loadReport} disabled={genBusy}><FileIcon size={14} />{genBusy ? 'Generating…' : 'Generate'}</button>
         </div>
         {report ? (
           <div className="codebox">
             <div className="code" style={{ maxHeight: 260, whiteSpace: 'pre-wrap' }}>{report}</div>
-            <div className="copy"><CopyButton text={report} /></div>
+            <div className="copy row-tight" style={{ gap: 6 }}>
+              <button className="iconbtn" onClick={downloadReport} title="Download as .md" type="button" aria-label="Download report as Markdown">
+                <DownloadIcon size={15} /><span style={{ marginLeft: 6, fontSize: 12 }}>Download .md</span>
+              </button>
+              <CopyButton text={report} />
+            </div>
           </div>
         ) : <div className="hint">Wraps the frontier-verified Strix report, branded for the client.</div>}
       </div>
@@ -216,13 +234,20 @@ function DetailDrawer({ engagement, onClose, onChanged }) {
 
 export default function Engagements() {
   const { data, loading, error, reload } = useResource(() => api('/engagements?limit=100'), []);
-  const [creating, setCreating] = React.useState(false);
+  const [params, setParams] = useSearchParams();
+  const [creating, setCreating] = React.useState(() => params.has('new'));
   const [selected, setSelected] = React.useState(null);
   const items = data?.items || [];
 
+  // Honor the onboarding deep-link (/engagements?new=1) then drop the param.
+  React.useEffect(() => {
+    if (params.has('new')) { setCreating(true); params.delete('new'); setParams(params, { replace: true }); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   return (
-    <div className="page">
-      <PageHead title="Engagements" subtitle="A scope-of-engagement is the record the authorization gate enforces. No run touches a target unless it sits in an active engagement and is covered by a valid attestation."
+    <div className="page" data-section="engagements">
+      <PageHead title="Engagements" eyebrow="Authorized scope" icon={<ShieldIcon />} subtitle="A scope-of-engagement is the record the authorization gate enforces. No run touches a target unless it sits in an active engagement and is covered by a valid attestation."
         actions={<button className="btn btn--primary" onClick={() => setCreating(true)}><PlusIcon size={15} />New engagement</button>} />
 
       <ErrorBanner error={error} />
