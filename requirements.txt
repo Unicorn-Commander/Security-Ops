@@ -15,14 +15,17 @@ greenlet==3.1.1             # required by SQLAlchemy's async bridge (explicit fo
 alembic==1.14.0             # migrations (migrations/env.py, `alembic upgrade head`)
 
 # --- Settings / validation (Pydantic v2) -----------------------------------
-pydantic==2.10.4            # app.core.config, schemas, DTOs
+pydantic==2.11.9            # app.core.config, schemas, DTOs (>=2.11 required by mcp)
 pydantic-settings==2.7.0    # app.core.config Settings (SECOPS_ env prefix, .env)
 
 # --- Auth (Keycloak OIDC JWT validation) -----------------------------------
 PyJWT[crypto]==2.10.1       # app.auth.sso: jwt + RSAAlgorithm.from_jwk (needs cryptography)
 
+# --- Agent surface (MCP server) --------------------------------------------
+mcp==1.27.2                 # app.mcp: FastMCP streamable-HTTP server mounted at /mcp/
+
 # --- HTTP client ------------------------------------------------------------
-httpx==0.28.1               # app.auth.sso JWKS fetch; app.engine.brigade_handoff; app.authz.proof
+httpx==0.28.1               # app.auth.sso JWKS fetch; app.engine.brigade_handoff; app.authz.proof; app.api.assistant
 
 # --- DNS (external-target ownership proof) ----------------------------------
 dnspython==2.7.0            # app.authz.proof DNS-TXT ownership verification (lazy import)

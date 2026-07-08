@@ -7,7 +7,7 @@ app touches ``os.environ`` directly. Backed by pydantic-settings with the
 
 import json
 from functools import lru_cache
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
@@ -49,6 +49,9 @@ class Settings(BaseSettings):
     # (long autonomous runs 504/drop through the CF-fronted public gateway).
     internal_litellm_base_url: str = "http://100.126.207.157:4000/v1"
     internal_litellm_api_key: str | None = None
+    # Console assistant chat model (spec §7): a logical model name the internal
+    # gateway resolves to a local GPU. Reasoning/thinking is disabled at call time.
+    assistant_model: str = "strix-qwen3.6-35b"
 
     # --- Strix runner ----------------------------------------------------
     strix_sandbox_image: str = "ghcr.io/usestrix/strix-sandbox:1.0.0"
@@ -57,6 +60,25 @@ class Settings(BaseSettings):
     # stronger `verify` model before the client-facing report. Off by default so a
     # single-model run stays single-pass; the engagement's profile opts in.
     strix_verify_pass: bool = False
+
+    # --- Run dispatch (isolated runner sidecar) --------------------------
+    # How a gate-cleared PENDING run reaches the Strix subprocess:
+    #   "inline" — fire an in-process asyncio worker in the API (dev/tests; default).
+    #   "queue"  — enqueue into `run_queue` and let the dedicated `secops-runner`
+    #              sidecar claim + execute it. The internet-facing API then never
+    #              spawns Strix and never mounts the Docker socket (host root); only
+    #              the isolated runner does. See deploy/bigboy/docker-compose.
+    run_dispatch_mode: Literal["inline", "queue"] = "inline"
+    # Isolated-runner poll cadence (queue mode): how often the sidecar looks for a
+    # newly-enqueued PENDING run to claim.
+    runner_poll_seconds: float = 3.0
+    # Cross-process E-stop: while a scan runs, poll the run's DB status this often
+    # and terminate the live Strix subprocess if an operator stopped it (the API's
+    # pidfile signal can't cross the container boundary to the runner). 0 disables
+    # the watcher — the inline/test path keeps its original single-await behavior.
+    runner_stop_poll_seconds: float = 0.0
+    # Identifies which runner claimed a queue row (audibility when scaled out).
+    runner_id: str = "secops-runner"
 
     # --- Reporting + Brigade hand-off (spec §8) --------------------------
     # Brand wrapper applied around Strix's penetration_test_report.md on export.
@@ -77,6 +99,26 @@ class Settings(BaseSettings):
     # Set true in tests / air-gapped envs to skip the live network proof fetch and
     # trust a pre-supplied evidence token. NEVER enable in production.
     attestation_skip_live_proof: bool = False
+
+    # --- Admin-only authorized-operator attestation (break-glass, spec §4) ----
+    # These skip the live ownership proof in favor of a RECORDED human authorization.
+    # Both are org-ADMIN-only and always audited — accountability is never removed,
+    # only the ownership-proof friction. A leaked PAT cannot use them (PATs resolve
+    # to OPERATOR, not ADMIN), so god-mode requires an interactive admin SSO session.
+    #
+    # SELF_ATTESTED: admin authorizes a target on their own responsibility (owned
+    # infra / signed engagement). On by default; still admin-gated + justified +
+    # time-boxed (attestation_default_ttl_days).
+    attestation_allow_self_attest: bool = True
+    # BREAK_GLASS: emergency red-team / DFIR authorization of ANY target with a
+    # stated justification, no ownership proof. OFF by default — this is the
+    # install-time switch to enable god-mode; flip it in the environment when the
+    # deployment needs it. Even enabled it stays admin-only, justification-required,
+    # short-TTL, and recorded under the dedicated TARGET_BREAK_GLASS audit action.
+    attestation_allow_break_glass: bool = False
+    # Shorter default lifetime for a break-glass authorization (days). Kept tight so
+    # an emergency grant lapses on its own rather than lingering as standing access.
+    attestation_break_glass_ttl_days: int = 7
 
     # --- Global kill-switch (honored by the authz gate) ------------------
     emergency_stop_all: bool = False

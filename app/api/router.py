@@ -7,8 +7,9 @@
 
 It carries the ``/api/v1`` prefix and pulls in the resource routers, so the
 full surface resolves as ``/api/v1/engagements…``, ``/api/v1/targets…``,
-``/api/v1/runs…``, ``/api/v1/findings…`` and the read-only console
-``/api/v1/overview``. Each sub-router owns its own
+``/api/v1/runs…``, ``/api/v1/findings…``, the read-only console
+``/api/v1/overview``, the agent-key management ``/api/v1/pats…``, and the console
+``/api/v1/assistant/chat``. Each sub-router owns its own
 ``tags`` and every route enforces SSO + the ``security-ops`` entitlement +
 tenant scope transitively through the dependencies in :mod:`app.api.deps`.
 
@@ -24,9 +25,12 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
+from app.api.assistant import router as assistant_router
 from app.api.engagements import router as engagements_router
 from app.api.findings import router as findings_router
+from app.api.me import router as me_router
 from app.api.overview import router as overview_router
+from app.api.pats import router as pats_router
 from app.api.runs import router as runs_router
 from app.api.targets import router as targets_router
 
@@ -37,5 +41,8 @@ api_router.include_router(targets_router)
 api_router.include_router(runs_router)
 api_router.include_router(findings_router)
 api_router.include_router(overview_router)
+api_router.include_router(pats_router)
+api_router.include_router(assistant_router)
+api_router.include_router(me_router)
 
 __all__ = ["api_router"]
