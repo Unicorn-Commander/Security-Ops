@@ -159,6 +159,45 @@ def _ip_of(value: str) -> "ipaddress.IPv4Address | ipaddress.IPv6Address | None"
         return None
 
 
+def _image_repo(value: str) -> "tuple[str, str, bool]":
+    """Derive ``(registry, repository, wildcard)`` from a container image ref, with
+    the tag/digest stripped — the identity an image attestation authorizes.
+
+    Mirrors the canonicalization in ``app.authz.scope`` but kept LOCAL (stdlib only,
+    no authz import): repositories are the lowest layer and must not depend on authz,
+    exactly like the local ``_host_of`` / ``_ip_of`` helpers. Defaults the registry to
+    ``docker.io`` and namespaces a bare Docker Hub name under ``library/`` so ``nginx``
+    and ``docker.io/library/nginx`` compare equal. A trailing ``/*`` marks a namespace
+    wildcard. Fails SAFE: unparseable input -> ``("", "", False)`` (no coverage).
+    """
+    try:
+        ref = (value or "").strip().lower()
+        if not ref:
+            return ("", "", False)
+        ref = ref.split("@", 1)[0]  # drop any @sha256:... digest
+        wildcard = ref.endswith("/*")
+        if wildcard:
+            ref = ref[:-2]
+        first, slash, rest = ref.partition("/")
+        # First component is the registry iff it looks like one (has a dot, a :port,
+        # or is localhost); otherwise the whole ref is a bare Docker Hub repository.
+        if slash and ("." in first or ":" in first or first == "localhost"):
+            registry, repository = first, rest
+        else:
+            registry, repository = "docker.io", ref
+        # Strip an image tag: a ':' in the final path segment of the repository.
+        if repository and ":" in repository.rsplit("/", 1)[-1]:
+            repository = repository.rpartition(":")[0]
+        # Default the library/ namespace for single-segment Docker Hub repos.
+        if registry == "docker.io" and repository and "/" not in repository:
+            repository = "library/" + repository
+        if not repository:
+            return ("", "", False)
+        return (registry, repository, wildcard)
+    except Exception:
+        return ("", "", False)
+
+
 def _is_exact(target: AuthorizedTarget, needle: str) -> bool:
     value = (target.value or "").strip()
     return bool(value) and value.lower() == needle.lower()
@@ -190,6 +229,17 @@ def _covers(target: AuthorizedTarget, needle: str) -> bool:
             base = value.lower().rstrip("/")
             candidate = needle.lower().rstrip("/")
             return candidate == base or candidate.startswith(base + "/")
+        if kind == TargetKind.IMAGE:
+            # Tag-agnostic, registry+repository identity (parity with REPO: an image
+            # attestation authorizes the asset across versions), with a ``/*``
+            # namespace wildcard. Same registry AND repository -> covered.
+            creg, crepo, wildcard = _image_repo(value)
+            nreg, nrepo, _ = _image_repo(needle)
+            if not crepo or not nrepo or creg != nreg:
+                return False
+            if wildcard:
+                return nrepo == crepo or nrepo.startswith(crepo + "/")
+            return nrepo == crepo
         return False
     except Exception:
         # A malformed row must never break the gate — treat as "not covered".

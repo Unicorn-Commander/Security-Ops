@@ -19,6 +19,7 @@ from typing import Annotated
 from fastapi import APIRouter, Query, status
 
 from app.api.deps import CurrentOrg, DbSession, EntitledUser
+from app.auth.sso import UserRole
 from app.authz.attestation import attest_target
 from app.authz.proof import proof_instructions
 from app.core.errors import NotFoundError
@@ -119,8 +120,10 @@ async def attest_target_route(
         method=data.method,
         checkbox_ack=data.checkbox_ack,
         typed_confirmation=data.typed_confirmation,
+        justification=data.justification,
         evidence=data.evidence,
         expires_at=data.expires_at,
+        actor_is_admin=user.role == UserRole.ADMIN,
     )
     await session.commit()
     return TargetRead.model_validate(target)

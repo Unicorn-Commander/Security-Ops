@@ -37,6 +37,10 @@ class AttestationRequest(BaseModel):
     method: AttestationMethod
     checkbox_ack: bool = False
     typed_confirmation: str | None = None
+    # Required for the admin-only SELF_ATTESTED / BREAK_GLASS methods: the written
+    # basis for authorizing this target without an ownership proof (owned-infra note,
+    # signed-engagement ref, IR/DFIR ticket). Recorded verbatim in the audit trail.
+    justification: str | None = None
     evidence: dict[str, Any] | None = None
     expires_at: datetime | None = None
 
