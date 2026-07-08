@@ -5,6 +5,7 @@ Endpoints (all under ``/api/v1``; every route requires SSO + the
 
     GET    /findings                       -> Page[FindingRead] (org-scoped inbox)
     GET    /findings/{finding_id}          -> FindingRead
+    POST   /findings/{finding_id}/status   -> FindingRead (operator triage)
     POST   /findings/{finding_id}/handoff  -> FindingRead (hands to Brigade)
 
 The ``GET /findings`` collection list is the org-scoped, read-only findings
@@ -34,7 +35,8 @@ from app.repositories.engagements import EngagementRepository
 from app.repositories.findings import FindingRepository
 from app.repositories.runs import RunRepository
 from app.schemas.common import Page
-from app.schemas.finding import FindingRead
+from app.schemas.finding import FindingRead, FindingStatusUpdate
+from app.services.findings import set_finding_status
 
 router = APIRouter(tags=["findings"])
 
@@ -74,6 +76,33 @@ async def get_finding_route(
     finding = await FindingRepository(session).get(finding_id)
     if finding is None or finding.org_id != org.id:
         raise NotFoundError("Finding not found")
+    return FindingRead.model_validate(finding)
+
+
+@router.post("/findings/{finding_id}/status", response_model=FindingRead)
+async def set_finding_status_route(
+    finding_id: uuid.UUID,
+    body: FindingStatusUpdate,
+    session: DbSession,
+    org: CurrentOrg,
+    user: EntitledUser,
+) -> FindingRead:
+    """Triage a finding — set its status (Mark verified / false positive / reopen).
+
+    Tenant-checked (a missing/cross-org finding is 404). Delegates to
+    ``app.services.findings.set_finding_status``, which flips the status and appends
+    ONE ``FINDING_TRIAGED`` audit row on a real change (idempotent no-op when the
+    status is unchanged). This route owns the commit. Setting ``HANDED_OFF`` via this
+    path is refused with 422 — that transition belongs to ``/handoff``.
+    """
+    finding = await FindingRepository(session).get(finding_id)
+    if finding is None or finding.org_id != org.id:
+        raise NotFoundError("Finding not found")
+
+    finding = await set_finding_status(
+        session, finding=finding, new_status=body.status, actor=user
+    )
+    await session.commit()
     return FindingRead.model_validate(finding)
 
 

@@ -14,6 +14,18 @@ from pydantic import BaseModel, ConfigDict
 from app.models.finding import FindingSeverity, FindingStatus
 
 
+class FindingStatusUpdate(BaseModel):
+    """Operator triage request — set a finding's status (spec §6).
+
+    The body for ``POST /findings/{id}/status`` and the MCP ``findings_set_status``
+    tool. Only operator-settable targets are honored by the service
+    (``set_finding_status`` rejects ``HANDED_OFF``, which belongs to the hand-off
+    flow); the value is validated against the ``FindingStatus`` enum here.
+    """
+
+    status: FindingStatus
+
+
 class FindingRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
