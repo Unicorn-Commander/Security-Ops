@@ -40,10 +40,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.audit.writer import record_event
 from app.authz.errors import AuthorizationDenied
 from app.authz.gate import enforce_scope
+from app.core.config import settings
 from app.core.errors import ValidationAppError
 from app.engine.strix_runner import launch_run_background, stop_run_process
 from app.models.audit import AuditAction
 from app.models.run import Run, RunStatus
+from app.repositories.run_queue import enqueue as enqueue_run
 from app.repositories.runs import RunRepository
 from app.schemas.engagement import DEFAULT_MODEL_PROFILE
 
@@ -141,6 +143,7 @@ async def start_run(
         id=run_id,
         engagement_id=engagement.id,
         org_id=engagement.org_id,
+        engine=getattr(data, "engine", "strix") or "strix",
         mode=data.mode,
         model_profile=model_profile,
         targets=targets,
@@ -165,15 +168,27 @@ async def start_run(
             "target_count": len(targets),
         },
     )
-    await session.commit()
 
-    # -- Phase 2: hand the gate-cleared PENDING run to the Strix subprocess. ------
-    # Detached worker owns its own session (the request session is gone by the time
-    # a 30+ min scan finishes). A launch hiccup must not fail run creation — the run
-    # stays PENDING and can be executed later.
-    _launch_worker(
-        run_id=run.id, engagement_id=engagement.id, org_id=run.org_id, actor=actor
-    )
+    # -- Dispatch to the Strix subprocess. ---------------------------------------
+    # "queue" (prod): enqueue the run for the isolated `secops-runner` sidecar. The
+    # queue row is inserted in THIS transaction, so a run and its dispatch commit
+    # atomically — the internet-facing API never spawns Strix nor mounts the Docker
+    # socket. "inline" (dev/tests): a detached in-process asyncio worker runs it
+    # (it owns its own session — the request session is gone by the time a 30+ min
+    # scan finishes). Either way a dispatch hiccup must not fail run creation.
+    if settings.run_dispatch_mode == "queue":
+        await enqueue_run(
+            session,
+            run_id=run.id,
+            org_id=run.org_id,
+            engagement_id=engagement.id,
+        )
+        await session.commit()
+    else:
+        await session.commit()
+        _launch_worker(
+            run_id=run.id, engagement_id=engagement.id, org_id=run.org_id, actor=actor
+        )
     return run
 
 
