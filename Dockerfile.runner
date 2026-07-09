@@ -123,6 +123,18 @@ RUN apt-get update \
     && apt-get purge -y --auto-remove curl \
     && rm -rf /var/lib/apt/lists/*
 
+# --- engine #5: Prowler (CSPM cloud posture, Apache-2.0) --------------------
+# app/engine/prowler_runner.py scans gate-cleared CLOUD_ACCOUNT targets. Prowler is
+# a heavy Python package with its own strict boto3/pydantic pins, so it is installed
+# in an ISOLATED venv (NOT the app's site-packages) and exposed on PATH via a symlink
+# — this keeps its dependency closure from ever clashing with `python -m app.runner`.
+# Runtime cloud credentials (re-assuming the CLOUD_ROLE-attested role) are injected by
+# the deploy, exactly like Strix's sandbox image and the model-gateway key.
+RUN python -m venv /opt/prowler \
+    && /opt/prowler/bin/pip install --no-cache-dir "prowler>=5,<6" \
+    && ln -sf /opt/prowler/bin/prowler /usr/local/bin/prowler \
+    && /usr/local/bin/prowler --version || true
+
 # --- application source + migrations (SAME layout as Dockerfile, for parity) ---
 # NOTE: the runner NEVER runs `alembic upgrade head` — the API entrypoint owns
 # migrations; two racing migrators is a bug. alembic.ini/migrations/scripts are
