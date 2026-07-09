@@ -53,6 +53,7 @@ KIND_URL = "URL"
 KIND_IP_RANGE = "IP_RANGE"
 KIND_REPO = "REPO"
 KIND_IMAGE = "IMAGE"
+KIND_CLOUD_ACCOUNT = "CLOUD_ACCOUNT"
 
 _DEFAULT_PORTS: dict[str, int] = {
     "http": 80,
@@ -99,7 +100,21 @@ _KIND_ALIASES: dict[str, str] = {
     "DOCKER": KIND_IMAGE,
     "OCI": KIND_IMAGE,
     "IMG": KIND_IMAGE,
+    "CLOUD_ACCOUNT": KIND_CLOUD_ACCOUNT,
+    "CLOUD-ACCOUNT": KIND_CLOUD_ACCOUNT,
+    "CLOUDACCOUNT": KIND_CLOUD_ACCOUNT,
+    "CLOUD": KIND_CLOUD_ACCOUNT,
+    "ACCOUNT": KIND_CLOUD_ACCOUNT,
+    "SUBSCRIPTION": KIND_CLOUD_ACCOUNT,
+    "PROJECT": KIND_CLOUD_ACCOUNT,
 }
+
+# A cloud-account target: ``<provider>:<account>`` with provider in {aws,gcp,azure}.
+# Unambiguous (no URL/repo/image/IP form uses these colon-prefixes), so it is detected
+# before the bare-authority parse — otherwise ``aws:123456789012`` would misparse as a
+# ``host:port`` domain. The registration ``kind`` is the real authority; this keeps the
+# gate's run-target normalization consistent with a registered CLOUD_ACCOUNT row.
+_CLOUD_RE = re.compile(r"^(aws|gcp|azure):([A-Za-z0-9][A-Za-z0-9._\-]{0,255})$", re.IGNORECASE)
 
 # Container-image reference grammar (Docker / OCI), used only for IMAGE targets.
 # A repository is one or more lowercase path components; a tag is a short
@@ -177,6 +192,9 @@ def normalize_target(raw: str) -> NormalizedTarget:
 
     if _is_repo_syntax(s):
         return _norm_repo(s)
+    cloud = _norm_cloud(s)
+    if cloud is not None:
+        return cloud
     if _is_image_syntax(s):
         return _norm_image(s)
     if "://" in s:
@@ -393,6 +411,21 @@ def _image_identity(s: Any, *, allow_wildcard: bool) -> tuple[str, str, bool] | 
         return None
 
 
+def _norm_cloud(s: str) -> "NormalizedTarget | None":
+    """Normalize a ``<provider>:<account>`` cloud target, or ``None`` if not one.
+
+    ``value`` is ``<provider-lowercased>:<account>`` (account case preserved — GCP
+    project ids and Azure GUIDs are case-sensitive-ish; AWS ids are digits). ``host``
+    carries the provider and ``path`` the account, so coverage can compare identity."""
+    m = _CLOUD_RE.match(s.strip())
+    if not m:
+        return None
+    provider = m.group(1).lower()
+    account = m.group(2)
+    value = f"{provider}:{account}"
+    return NormalizedTarget(raw=s, kind=KIND_CLOUD_ACCOUNT, value=value, host=provider, path=account)
+
+
 def _norm_path(p: str | None) -> str:
     """Canonicalize a URL path: collapse ``//``, drop the trailing slash, and map
     the root (``""`` / ``"/"``) to ``""``. Result is ``""`` or a leading-slash path."""
@@ -489,6 +522,8 @@ def target_covers(container_kind: Any, container_value: str, target: Any) -> boo
         return _repo_covers(container_value, nt)
     if ck == KIND_IMAGE:
         return _image_covers(container_value, nt)
+    if ck == KIND_CLOUD_ACCOUNT:
+        return _cloud_covers(container_value, nt)
     return False
 
 
@@ -588,6 +623,38 @@ def _image_covers(container_value: str, nt: NormalizedTarget) -> bool:
             return True
         return trepo == crepo or trepo.startswith(crepo + "/")
     return crepo == trepo
+
+
+def _cloud_covers(container_value: str, nt: NormalizedTarget) -> bool:
+    """Whether a CLOUD_ACCOUNT authorization ``container_value`` covers ``nt``.
+
+    Coverage is EXACT on ``<provider>:<account>`` (an account authorization attests
+    exactly that account — never a sibling account), with one deliberate wildcard: a
+    whole-provider grant ``<provider>:*`` covers every account of that provider (an org
+    that authorized all of its AWS may register ``aws:*``). Fail-closed: a target that
+    is not a parseable cloud account is never covered by a cloud rule."""
+    cv = (container_value or "").strip()
+    cm = _CLOUD_RE.match(cv)
+    wildcard = False
+    if cm is None:
+        # Allow the explicit whole-provider wildcard form ``aws:*`` (not matched by the
+        # strict account regex).
+        low = cv.lower()
+        if low in ("aws:*", "gcp:*", "azure:*"):
+            provider, wildcard = low.split(":", 1)[0], True
+        else:
+            return False
+    else:
+        provider = cm.group(1).lower()
+    target = _norm_cloud(nt.raw) or (nt if nt.kind == KIND_CLOUD_ACCOUNT else None)
+    if target is None:
+        return False
+    tprovider = (target.host or "").lower()
+    if provider != tprovider:
+        return False
+    if wildcard:
+        return True
+    return cv.lower() == target.value.lower()
 
 
 def _extract_host(container_value: str) -> str:

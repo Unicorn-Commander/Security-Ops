@@ -21,8 +21,10 @@ from fastapi import APIRouter, Query, status
 from app.api.deps import CurrentOrg, DbSession, EntitledUser
 from app.auth.sso import UserRole
 from app.authz.attestation import attest_target
+from app.authz.cloud_proof import cloud_instructions
 from app.authz.proof import proof_instructions
 from app.core.errors import NotFoundError
+from app.models.target import TargetKind
 from app.repositories.targets import TargetRepository
 from app.schemas.common import Page
 from app.schemas.target import AttestationRequest, TargetCreate, TargetRead
@@ -92,6 +94,10 @@ async def attestation_challenge_route(
     target = await TargetRepository(session).get(target_id)
     if target is None or target.org_id != org.id:
         raise NotFoundError("Target not found")
+    # Cloud accounts prove authorization by a role grant, not a published token, so
+    # they get the CLOUD_ROLE instructions (external ID + trust-policy snippet).
+    if target.kind == TargetKind.CLOUD_ACCOUNT:
+        return cloud_instructions(target)
     return proof_instructions(target)
 
 

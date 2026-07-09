@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any, Callable
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.audit.writer import record_event
+from app.authz.cloud_proof import CloudProofResult, is_cloud_method, verify_cloud_role
 from app.authz.proof import ProofResult, is_proof_method, verify_proof
 from app.core.config import settings
 from app.core.errors import ForbiddenError, NotFoundError, ValidationAppError
@@ -59,12 +60,22 @@ _PRIVILEGED_METHODS = frozenset(
     }
 )
 
-# Methods that must always carry an expiry (external + break-glass grants never
+# Cloud-account possession-proof methods (spec §4, Prowler): the operator proves a
+# scoped role grant rather than publishing a token. Verified live (app.authz.cloud_proof).
+# Like the external-proof methods these are NOT admin-only — any operator can prove a
+# role they were granted — and they are time-boxed (a role grant is never standing access).
+_CLOUD_METHODS = frozenset({AttestationMethod.CLOUD_ROLE})
+
+# Methods that must always carry an expiry (external + cloud + break-glass grants never
 # become standing access): a default TTL is applied when the caller supplies none.
-_EXPIRING_METHODS = _PROOF_METHODS | _PRIVILEGED_METHODS
+_EXPIRING_METHODS = _PROOF_METHODS | _CLOUD_METHODS | _PRIVILEGED_METHODS
 
 #: Signature of an injectable proof verifier (defaults to the live verifier).
 ProofVerifier = Callable[[AuthorizedTarget, AttestationMethod], ProofResult]
+
+#: Signature of an injectable cloud role-assumption verifier (role_arn, region) ->
+#: CloudProofResult. Defaults to the live app.authz.cloud_proof.verify_cloud_role.
+CloudRoleVerifier = Callable[..., CloudProofResult]
 
 
 def _utcnow() -> datetime:
@@ -119,6 +130,7 @@ async def attest_target(
     evidence: dict[str, Any] | None = None,
     expires_at: datetime | None = None,
     verifier: ProofVerifier | None = None,
+    cloud_verifier: "CloudRoleVerifier | None" = None,
     actor_is_admin: bool = False,
 ) -> AuthorizedTarget:
     """Attest ``target_id`` so the gate will treat it as scannable, and audit it.
@@ -166,6 +178,15 @@ async def attest_target(
     # only that the method is unavailable, never how to satisfy it.
     if method in _PRIVILEGED_METHODS:
         _authorize_privileged_method(method, actor_is_admin)
+    # Cloud role-assumption proof honors its install switch (not admin-gated: the
+    # role assumption itself is the authorization). Disabled => the method is
+    # unavailable (403), never a silently-open path.
+    if method in _CLOUD_METHODS and not settings.attestation_allow_cloud_role:
+        raise ForbiddenError(
+            "cloud-account role attestation is disabled on this deployment",
+            code="attestation_method_disabled",
+            detail={"method": method.value, "enable_with": "attestation_allow_cloud_role"},
+        )
     _enforce_minimums(
         method, checkbox_ack, typed_confirmation, justification, evidence, expires_at
     )
@@ -176,6 +197,11 @@ async def attest_target(
     proof_evidence: dict[str, Any] | None = None
     if is_proof_method(method):
         proof_evidence = _verify_ownership_proof(target, method, verifier)
+    # Cloud-account possession proof — VERIFIED live by assuming the granted role with
+    # our per-target external ID (spec §4, Prowler). Same fail-closed contract: a role
+    # that does not assume raises 422 and the target stays unattested.
+    elif is_cloud_method(method):
+        proof_evidence = _verify_cloud_role_proof(target, evidence, cloud_verifier)
 
     now = _utcnow()
     effective_expiry = _effective_expiry(method, expires_at, now)
@@ -296,6 +322,37 @@ def _verify_ownership_proof(
     return evidence
 
 
+def _verify_cloud_role_proof(
+    target: AuthorizedTarget,
+    evidence: dict[str, Any] | None,
+    cloud_verifier: "CloudRoleVerifier | None",
+) -> dict[str, Any]:
+    """Run (or skip) the live cloud role-assumption proof; raise 422 if it does not
+    verify. The operator supplies ``role_arn`` (and optional ``region``) in the
+    attestation ``evidence``; the server assumes that role with the target's per-target
+    external ID and records the assumed-role identity it obtained. On any non-verified
+    result the target stays unattested (a scan remains impossible)."""
+    supplied = evidence or {}
+    role_arn = str(supplied.get("role_arn") or "").strip()
+    region = supplied.get("region")
+    verify = cloud_verifier or verify_cloud_role
+    result = verify(target, role_arn=role_arn, region=region)
+    record = result.as_evidence() if isinstance(result, CloudProofResult) else dict(result)
+    if not record.get("verified"):
+        raise ValidationAppError(
+            f"cloud role authorization for {target.value!r} did not verify",
+            code="attestation_proof_failed",
+            detail={
+                "method": AttestationMethod.CLOUD_ROLE.value,
+                "target": target.value,
+                "external_id": record.get("external_id"),
+                "role_arn": role_arn or None,
+                "error": (record.get("detail") or {}).get("error") if isinstance(record.get("detail"), dict) else None,
+            },
+        )
+    return record
+
+
 def _effective_expiry(
     method: AttestationMethod, expires_at: datetime | None, now: datetime
 ) -> datetime | None:
@@ -335,7 +392,10 @@ def _merge_evidence(
         return None
     merged: dict[str, Any] = dict(supplied or {})
     if proof is not None:
-        merged["ownership_proof"] = proof
+        # Cloud role-assumption evidence is recorded under its own key (it is a
+        # possession-of-role proof, not a DNS/file/header ownership proof).
+        key = "cloud_authorization" if method in _CLOUD_METHODS else "ownership_proof"
+        merged[key] = proof
     if is_privileged:
         merged["authorization"] = {
             "method": method.value,
@@ -367,6 +427,14 @@ def _enforce_minimums(
             "typed confirmation is required for TYPED_CONFIRMATION attestation",
             code="attestation_incomplete",
             detail={"field": "typed_confirmation"},
+        )
+    # CLOUD_ROLE needs the role ARN the server will assume — the proof cannot even be
+    # attempted without it (the live assume-role call verifies the rest).
+    if method == AttestationMethod.CLOUD_ROLE and not str((evidence or {}).get("role_arn") or "").strip():
+        raise ValidationAppError(
+            "CLOUD_ROLE attestation requires evidence.role_arn (the role to assume)",
+            code="attestation_incomplete",
+            detail={"field": "evidence.role_arn", "method": method.value},
         )
     # Privileged (self-attest / break-glass) grants have no ownership proof, so the
     # written justification IS the authorization record — it is mandatory. A short

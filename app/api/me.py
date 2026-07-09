@@ -51,5 +51,8 @@ async def me_route(org: CurrentOrg, user: EntitledUser) -> dict:
         "capabilities": {
             "self_attest": is_admin and settings.attestation_allow_self_attest,
             "break_glass": is_admin and settings.attestation_allow_break_glass,
+            # Cloud-account possession proof is NOT admin-only (the role assumption IS
+            # the authorization), so this is gated on the install switch alone.
+            "cloud_role": settings.attestation_allow_cloud_role,
         },
     }

@@ -38,6 +38,15 @@ class TargetKind(str, enum.Enum):
     # the Trivy engine (``trivy image``). Added for engine #4; see migration
     # ``0008_target_kind_image`` and ``app/engine/trivy_runner.py``.
     IMAGE = "IMAGE"
+    # A cloud account / project / subscription (``aws:<account-id>`` /
+    # ``gcp:<project-id>`` / ``azure:<subscription-guid>``) — scanned by the Prowler
+    # engine (CSPM posture). Its authorization is NOT a possession-of-DNS proof but a
+    # possession-of-assumable-role proof: the operator grants Security-Ops' scanner
+    # principal a scoped role whose trust policy requires our per-target external-ID,
+    # and the server proves it can assume it (``AttestationMethod.CLOUD_ROLE``). Added
+    # for engine #5; see migration ``0009_cloud_account_target``,
+    # ``app/authz/cloud_proof.py`` and ``app/engine/prowler_runner.py``.
+    CLOUD_ACCOUNT = "CLOUD_ACCOUNT"
 
 
 class AttestationMethod(str, enum.Enum):
@@ -68,6 +77,18 @@ class AttestationMethod(str, enum.Enum):
     OWNED = "OWNED"
     SELF_ATTESTED = "SELF_ATTESTED"
     BREAK_GLASS = "BREAK_GLASS"
+    # Cloud-account possession proof (spec §4, engine #5 / Prowler). Parallel to the
+    # DNS/file/header ownership proofs but for a CLOUD_ACCOUNT target: the operator
+    # configures a cross-account IAM role (or GCP/Azure equivalent) whose trust
+    # policy (a) trusts Security-Ops' scanner principal and (b) requires the
+    # per-target external-ID challenge the server generated; the server then proves
+    # authorization by actually assuming the role (STS AssumeRole with our external
+    # ID) and records the assumed-role identity it obtained. Being able to assume the
+    # role proves the operator granted us scoped access to THIS account — the
+    # standard cross-account confused-deputy-safe authorization pattern. Verified
+    # live (``app.authz.cloud_proof``); like the other proof methods it is NOT
+    # admin-only (any operator can prove a role they were granted) and is time-boxed.
+    CLOUD_ROLE = "CLOUD_ROLE"
 
 
 class AttestationStatus(str, enum.Enum):

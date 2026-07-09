@@ -35,6 +35,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 
 from app.auth.sso import UserRole
 from app.authz.attestation import attest_target
+from app.authz.cloud_proof import cloud_instructions
 from app.authz.gate import check_scope
 from app.authz.proof import proof_instructions
 from app.core.errors import NotFoundError, ValidationAppError
@@ -241,6 +242,10 @@ async def _targets_attestation_challenge_impl(
     ctx: McpContext, target_id: uuid.UUID
 ) -> dict[str, Any]:
     target = await _load_target(ctx, target_id)
+    from app.models.target import TargetKind
+
+    if target.kind == TargetKind.CLOUD_ACCOUNT:
+        return cloud_instructions(target)
     return proof_instructions(target)
 
 

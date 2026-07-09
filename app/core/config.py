@@ -97,8 +97,23 @@ class Settings(BaseSettings):
     attestation_http_timeout: float = 10.0
     attestation_default_ttl_days: int = 90
     # Set true in tests / air-gapped envs to skip the live network proof fetch and
-    # trust a pre-supplied evidence token. NEVER enable in production.
+    # trust a pre-supplied evidence token. NEVER enable in production. (Also bypasses
+    # the live STS AssumeRole for the CLOUD_ROLE cloud-account proof.)
     attestation_skip_live_proof: bool = False
+
+    # --- Cloud-account attestation (CLOUD_ROLE possession proof, Prowler) --------
+    # The external-ID prefix the operator must require in their cross-account role
+    # trust policy; the full challenge is "<prefix>=<target-id>" (unpredictable per
+    # target, no server secret). Parity with the DNS/file/header token.
+    attestation_cloud_external_id_prefix: str = "security-ops-external-id"
+    # Security-Ops' own scanner principal (e.g. an IAM user/role ARN). Shown in the
+    # attestation-challenge instructions so the operator knows whom to trust in their
+    # role's trust policy. Unset => instructions tell them to ask the operator.
+    attestation_scanner_principal_arn: str | None = None
+    # Feature switch for the cloud-account possession proof. On by default; unlike
+    # break-glass this is NOT admin-only — the proof itself (assuming a role granted
+    # with our external ID) is the authorization, exactly like a DNS-TXT proof.
+    attestation_allow_cloud_role: bool = True
 
     # --- Admin-only authorized-operator attestation (break-glass, spec §4) ----
     # These skip the live ownership proof in favor of a RECORDED human authorization.

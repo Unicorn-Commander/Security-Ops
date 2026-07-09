@@ -240,6 +240,15 @@ def _covers(target: AuthorizedTarget, needle: str) -> bool:
             if wildcard:
                 return nrepo == crepo or nrepo.startswith(crepo + "/")
             return nrepo == crepo
+        if kind == TargetKind.CLOUD_ACCOUNT:
+            # Exact ``<provider>:<account>`` identity (an account attestation authorizes
+            # exactly that account — never a sibling), plus an explicit whole-provider
+            # wildcard ``<provider>:*``. Fail-safe: no cross-account coverage.
+            base = value.lower()
+            cand = needle.lower()
+            if base.endswith(":*"):
+                return cand.startswith(base[:-1])  # e.g. "aws:" prefix
+            return cand == base
         return False
     except Exception:
         # A malformed row must never break the gate — treat as "not covered".
