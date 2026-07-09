@@ -32,3 +32,6 @@ deploy/bigboy/.env.bigboy
 
 # bigboy SSO allowlist (PII) — never commit; use emails.txt.example
 deploy/bigboy/emails.txt
+
+# Claude Code agent worktrees + local session metadata
+.claude/
