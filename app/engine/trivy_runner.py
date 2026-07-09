@@ -39,6 +39,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from app.engine.gitleaks_runner import _redact_secret
+from app.engine.enrich import enrich_cves
 from app.engine.strix_runner import (
     ParsedVulnerability,
     StrixInvocation,
@@ -109,7 +110,7 @@ class TrivyRunner(StrixRunner):
             pid_path=run_dir / "trivy.pid",
         )
 
-    def _build_result(
+    async def _build_result(
         self,
         invocation: StrixInvocation,
         *,
@@ -121,6 +122,8 @@ class TrivyRunner(StrixRunner):
         findings: list[ParsedVulnerability] = []
         for report in reports:
             findings.extend(_parse_trivy_json(report))
+        if findings and getattr(self.settings, "enrichment_enabled", True):
+            await enrich_cves(findings)
         report_present = any(r.exists() for r in reports)
         return StrixRunResult(
             returncode=returncode,

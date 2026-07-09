@@ -11,6 +11,7 @@ import { PlayIcon, ShieldIcon, ChevronRightIcon, CrosshairIcon, CircleXIcon } fr
 import { fmtMoney, relTime, titleCase } from '../lib/format.js';
 
 const MODES = ['QUICK', 'STANDARD', 'DEEP'];
+const ENGINES = ['strix', 'nuclei', 'gitleaks', 'trivy', 'prowler', 'opengrep', 'zap', 'naabu'];
 const FILTERS = [
   { label: 'All', value: '' },
   { label: 'Running', value: 'RUNNING' },
@@ -52,6 +53,7 @@ function StartRunDrawer({ onClose, prefillEngagement }) {
   const active = (engData?.items || []).filter((e) => e.status === 'ACTIVE');
   const [engId, setEngId] = React.useState(prefillEngagement || '');
   const [mode, setMode] = React.useState('STANDARD');
+  const [engine, setEngine] = React.useState('strix');
   const [targetsText, setTargetsText] = React.useState('');
   const [profile, setProfile] = React.useState('');
   const { run, busy, error, setError } = useMutation();
@@ -68,7 +70,7 @@ function StartRunDrawer({ onClose, prefillEngagement }) {
     e.preventDefault();
     if (!engId) { setError({ code: 'input', message: 'Select an active engagement to start a run.' }); return; }
     if (targets.length === 0) { setError({ code: 'input', message: 'Enter at least one target — each is authorization-checked by the gate.' }); return; }
-    const body = { mode, targets };
+    const body = { mode, targets, engine };
     if (profile.trim()) body.model_profile = profile.trim();
     try {
       const created = await run(`/engagements/${engId}/runs`, { method: 'POST', body });
@@ -104,6 +106,13 @@ function StartRunDrawer({ onClose, prefillEngagement }) {
             <div className="segmented">
               {MODES.map((m) => <button type="button" key={m} className={mode === m ? 'is-active' : ''} onClick={() => setMode(m)}>{titleCase(m)}</button>)}
             </div>
+          </div>
+          <div className="field">
+            <label className="label">Engine</label>
+            <select className="select mono" value={engine} onChange={(e) => setEngine(e.target.value)}>
+              {ENGINES.map((item) => <option key={item} value={item}>{item}</option>)}
+            </select>
+            <div className="hint">Choose the runner that will execute the gate-cleared targets.</div>
           </div>
           <div className="field">
             <label className="label">Targets</label>

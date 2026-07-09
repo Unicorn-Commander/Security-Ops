@@ -21,6 +21,7 @@ models}. Nothing there imports services.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import logging
 from typing import TYPE_CHECKING
 
@@ -46,10 +47,21 @@ _OPERATOR_SETTABLE: frozenset[FindingStatus] = frozenset(
         FindingStatus.REMEDIATED,
     }
 )
+_CLOSING_STATUSES: frozenset[FindingStatus] = frozenset(
+    {FindingStatus.FALSE_POSITIVE, FindingStatus.REMEDIATED, FindingStatus.HANDED_OFF}
+)
 
 
 def _status_value(status: object) -> object:
     return getattr(status, "value", status)
+
+
+def _actor_label(actor: "AuthUser | str") -> str:
+    for attr in ("email", "id", "sub", "username"):
+        value = getattr(actor, attr, None)
+        if value:
+            return str(value)
+    return str(actor)
 
 
 async def set_finding_status(
@@ -58,6 +70,7 @@ async def set_finding_status(
     finding: Finding,
     new_status: FindingStatus,
     actor: "AuthUser | str",
+    closure_reason: str | None = None,
 ) -> Finding:
     """Set a finding's status via operator triage and record it (audited).
 
@@ -96,7 +109,16 @@ async def set_finding_status(
     old_value = _status_value(old_status)
     new_value = _status_value(new_status)
     finding.status = new_status
+    if new_status in _CLOSING_STATUSES:
+        finding.closure_reason = (closure_reason or "").strip() or None
+        finding.closed_by = _actor_label(actor)
+        finding.closed_at = datetime.now(timezone.utc)
+    else:
+        finding.closure_reason = None
+        finding.closed_by = None
+        finding.closed_at = None
     await session.flush()
+    await session.refresh(finding)
 
     await record_event(
         session,
@@ -107,7 +129,7 @@ async def set_finding_status(
         run_id=getattr(finding, "run_id", None),
         target=getattr(finding, "endpoint", None),
         decision="triaged",
-        reason=f"finding marked {new_value}",
+        reason=finding.closure_reason or f"finding marked {new_value}",
         detail={"from": old_value, "to": new_value},
     )
     logger.info(

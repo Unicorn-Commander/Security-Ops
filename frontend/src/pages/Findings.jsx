@@ -103,6 +103,7 @@ function DetailDrawer({ finding, onClose, onChanged }) {
   const { run, busy } = useMutation();
   const [f, setF] = React.useState(finding);
   const [notice, setNotice] = React.useState(null);
+  const [closureReason, setClosureReason] = React.useState('');
   // Story vs Evidence — the XBOW split. Story = the human-readable case; Evidence =
   // the reproducible artifacts. Default to the story, reset on finding change.
   const [tab, setTab] = React.useState('story');
@@ -110,7 +111,7 @@ function DetailDrawer({ finding, onClose, onChanged }) {
   // Refresh from the server so evidence is current when the drawer opens.
   React.useEffect(() => {
     let live = true;
-    setF(finding); setNotice(null); setTab('story');
+    setF(finding); setNotice(null); setTab('story'); setClosureReason(finding.closure_reason || '');
     api(`/findings/${finding.id}`).then((d) => { if (live) setF(d); }).catch(() => {});
     return () => { live = false; };
   }, [finding]);
@@ -136,13 +137,18 @@ function DetailDrawer({ finding, onClose, onChanged }) {
   // HANDED_OFF is terminal here — Brigade owns the finding once handed off.
   const handedOff = f.status === 'HANDED_OFF';
   const closed = f.status === 'FALSE_POSITIVE' || f.status === 'REMEDIATED';
+  const terminalReason = f.closure_reason || (handedOff ? 'handed off to Brigade' : '');
 
   // Operator triage — set the finding's status (Mark verified / false positive /
   // reopen). Mirrors the hand-off path: POST the new status, refresh, toast, refetch.
   async function triage(status, label) {
     setNotice(null);
     try {
-      const updated = await run(`/findings/${f.id}/status`, { method: 'POST', body: { status } });
+      const body = { status };
+      if (status === 'FALSE_POSITIVE' || status === 'REMEDIATED') {
+        body.closure_reason = closureReason.trim() || null;
+      }
+      const updated = await run(`/findings/${f.id}/status`, { method: 'POST', body });
       setF(updated);
       toast({ title: label });
       onChanged();
@@ -183,6 +189,18 @@ function DetailDrawer({ finding, onClose, onChanged }) {
       ) : (
         <>
           <button className="btn btn--ghost" onClick={onClose}>Close</button>
+          {(f.status === 'NEW' || f.status === 'VERIFIED') && (
+            <div className="field" style={{ minWidth: 260, marginRight: 'auto' }}>
+              <label className="label">Closure reason</label>
+              <textarea
+                className="textarea"
+                value={closureReason}
+                onChange={(e) => setClosureReason(e.target.value)}
+                placeholder="Why is this being closed?"
+                rows={2}
+              />
+            </div>
+          )}
           {closed && (
             <button
               className="btn btn--ghost"
@@ -201,6 +219,16 @@ function DetailDrawer({ finding, onClose, onChanged }) {
               onClick={() => triage('FALSE_POSITIVE', 'Marked false positive')}
             >
               <CircleXIcon size={15} />Mark false positive
+            </button>
+          )}
+          {(f.status === 'NEW' || f.status === 'VERIFIED') && (
+            <button
+              className="btn btn--ghost"
+              disabled={busy}
+              title="Close this finding as remediated"
+              onClick={() => triage('REMEDIATED', 'Marked remediated')}
+            >
+              <CircleCheckIcon size={15} />Mark remediated
             </button>
           )}
           {f.status === 'NEW' && (
@@ -236,6 +264,19 @@ function DetailDrawer({ finding, onClose, onChanged }) {
 
       {/* The rarest trust signal an autonomous engine can show — kept tasteful. */}
       {validated && <ValidatedRibbon verifiedBy={f.verified_by} />}
+
+      {(closed || handedOff) && (
+        <div className="banner banner--ok" style={{ alignItems: 'flex-start' }}>
+          <CircleCheckIcon />
+          <div className="grow">
+            <div><b>Closed</b>{terminalReason ? <> — {terminalReason}</> : null}</div>
+            <div className="muted" style={{ marginTop: 4 }}>
+              {f.closed_by ? <span className="mono">{f.closed_by}</span> : 'Unknown actor'}
+              {f.closed_at ? <> · {fmtDate(f.closed_at)} · {relTime(f.closed_at)}</> : null}
+            </div>
+          </div>
+        </div>
+      )}
 
       {notice && (
         <Banner kind={notice.kind}>
@@ -326,6 +367,24 @@ function DetailDrawer({ finding, onClose, onChanged }) {
 
           <CodeSection label="Proof of concept" text={f.poc} maxHeight={260} />
           <CodeSection label="Payload" text={f.payload} />
+
+          {(closed || handedOff) && (
+            <div>
+              <div className="label" style={{ marginBottom: 8 }}>Closure</div>
+              <div className="card" style={{ padding: 'var(--s-4)', borderColor: 'var(--border-strong)' }}>
+                <div className="row between" style={{ alignItems: 'flex-start', gap: 'var(--s-4)' }}>
+                  <div>
+                    <div style={{ fontWeight: 560 }}>{terminalReason || 'Closed'}</div>
+                    <div className="muted" style={{ marginTop: 4 }}>
+                      {f.closed_by ? <span className="mono">{f.closed_by}</span> : 'Unknown actor'}
+                      {f.closed_at ? <> · {fmtDate(f.closed_at)} · {relTime(f.closed_at)}</> : null}
+                    </div>
+                  </div>
+                  <StatusBadge value={f.status} />
+                </div>
+              </div>
+            </div>
+          )}
 
           {extraKeys.length > 0 && (
             <CodeSection

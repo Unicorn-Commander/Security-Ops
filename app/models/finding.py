@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import enum
 import uuid
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 import sqlalchemy as sa
@@ -62,6 +63,7 @@ class Finding(UUIDMixin, TimestampMixin, Base):
     )
     cwe: Mapped[str | None] = mapped_column(String(64), nullable=True)
     endpoint: Mapped[str | None] = mapped_column(Text, nullable=True)
+    fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     payload: Mapped[str | None] = mapped_column(Text, nullable=True)
     evidence: Mapped[dict | None] = mapped_column(_JSONB, nullable=True)
     poc: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -75,6 +77,9 @@ class Finding(UUIDMixin, TimestampMixin, Base):
     )
     # Brigade ticket / PR id once handed off.
     handoff_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
+    closure_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    closed_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    closed_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
 
     run: Mapped["Run"] = relationship("Run", back_populates="findings")
 

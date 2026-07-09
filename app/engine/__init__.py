@@ -27,6 +27,10 @@ from app.engine.strix_runner import (
     resolve_model_profile,
     stop_run_process,
 )
+from app.engine.opengrep_runner import OpengrepRunner
+from app.engine.naabu_runner import NaabuRunner
+from app.engine.zap_runner import ZapRunner
+from app.engine.enrich import enrich_cves
 from app.engine.brigade_handoff import (
     BRIGADE_HANDOFF_AGENT,
     BrigadeHandoffClient,
@@ -44,6 +48,9 @@ __all__ = [
     "MODEL_PROFILES",
     "ModelProfile",
     "ParsedVulnerability",
+    "OpengrepRunner",
+    "NaabuRunner",
+    "ZapRunner",
     "StrixInvocation",
     "StrixRunResult",
     "StrixRunner",
@@ -57,6 +64,7 @@ __all__ = [
     "render_instruction_file",
     "resolve_model_profile",
     "stop_run_process",
+    "enrich_cves",
     # brigade_handoff
     "BRIGADE_HANDOFF_AGENT",
     "BrigadeHandoffClient",

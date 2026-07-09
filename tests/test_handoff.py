@@ -83,6 +83,9 @@ async def test_handoff_success_flips_status_and_audits(db_session):
 
     assert result.status == FindingStatus.HANDED_OFF
     assert result.handoff_ref == "BRIG-777"
+    assert result.closure_reason == "handed off to Brigade"
+    assert result.closed_by == "tester"
+    assert result.closed_at is not None
     # Payload carried the finding's evidence for Brigade to act on without re-scanning.
     assert client.submitted.finding_id == str(finding.id)
 

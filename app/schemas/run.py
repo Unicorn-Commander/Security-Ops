@@ -50,8 +50,10 @@ class RunCreate(BaseModel):
     @classmethod
     def _known_engine(cls, value: str) -> str:
         v = (value or "strix").strip().lower()
-        if v not in ("strix", "nuclei", "gitleaks", "trivy", "prowler"):
-            raise ValueError("engine must be 'strix', 'nuclei', 'gitleaks', 'trivy', or 'prowler'")
+        if v not in ("strix", "nuclei", "gitleaks", "trivy", "prowler", "opengrep", "zap", "naabu"):
+            raise ValueError(
+                "engine must be 'strix', 'nuclei', 'gitleaks', 'trivy', 'prowler', 'opengrep', 'zap', or 'naabu'"
+            )
         return v
 
 
@@ -64,7 +66,7 @@ class RunRead(BaseModel):
     org_id: uuid.UUID
     # Strix's own run id (set in Phase 2).
     strix_run_id: str | None = None
-    # Which engine ran this (strix | nuclei | gitleaks | trivy).
+    # Which engine ran this (strix | nuclei | gitleaks | trivy | prowler | opengrep | zap | naabu).
     engine: str = "strix"
     mode: RunMode
     model_profile: str

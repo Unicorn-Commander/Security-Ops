@@ -172,6 +172,14 @@ def _opt_str(value: Any) -> str | None:
     return None if value is None else str(value)
 
 
+def _actor_label(actor: "AuthUser | str") -> str:
+    for attr in ("email", "id", "sub", "username"):
+        value = getattr(actor, attr, None)
+        if value:
+            return str(value)
+    return str(actor)
+
+
 # ---------------------------------------------------------------------------
 # Client
 # ---------------------------------------------------------------------------
@@ -299,7 +307,11 @@ async def handoff_finding(
 
     finding.handoff_ref = ref
     finding.status = FindingStatus.HANDED_OFF
+    finding.closure_reason = "handed off to Brigade"
+    finding.closed_by = _actor_label(actor)
+    finding.closed_at = datetime.now(timezone.utc)
     await session.flush()
+    await session.refresh(finding)
 
     await record_event(
         session,

@@ -60,6 +60,8 @@ class Settings(BaseSettings):
     # stronger `verify` model before the client-facing report. Off by default so a
     # single-model run stays single-pass; the engagement's profile opts in.
     strix_verify_pass: bool = False
+    # Fail-safe vulnerability enrichment (EPSS / CISA KEV) for CVE findings.
+    enrichment_enabled: bool = True
 
     # --- Run dispatch (isolated runner sidecar) --------------------------
     # How a gate-cleared PENDING run reaches the Strix subprocess:

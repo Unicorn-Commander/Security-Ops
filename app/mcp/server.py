@@ -366,7 +366,10 @@ async def _findings_handoff_impl(ctx: McpContext, finding_id: uuid.UUID) -> dict
 
 
 async def _findings_set_status_impl(
-    ctx: McpContext, finding_id: uuid.UUID, status: FindingStatus
+    ctx: McpContext,
+    finding_id: uuid.UUID,
+    status: FindingStatus,
+    closure_reason: str | None = None,
 ) -> dict[str, Any]:
     """Operator triage over MCP — set a finding's status (audited), agent/human parity.
 
@@ -376,7 +379,11 @@ async def _findings_set_status_impl(
     """
     finding = await _load_finding(ctx, finding_id)
     finding = await set_finding_status(
-        ctx.session, finding=finding, new_status=status, actor=ctx.user
+        ctx.session,
+        finding=finding,
+        new_status=status,
+        actor=ctx.user,
+        closure_reason=closure_reason,
     )
     await ctx.session.commit()
     return FindingRead.model_validate(finding).model_dump(mode="json")

@@ -100,7 +100,11 @@ async def set_finding_status_route(
         raise NotFoundError("Finding not found")
 
     finding = await set_finding_status(
-        session, finding=finding, new_status=body.status, actor=user
+        session,
+        finding=finding,
+        new_status=body.status,
+        actor=user,
+        closure_reason=body.closure_reason,
     )
     await session.commit()
     return FindingRead.model_validate(finding)

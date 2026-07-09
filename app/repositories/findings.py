@@ -15,6 +15,7 @@ Dependency direction (no cycles): repositories -> {models, db}.
 
 from __future__ import annotations
 
+import hashlib
 import uuid
 
 from sqlalchemy import func, select
@@ -28,6 +29,31 @@ class FindingRepository:
 
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
+        self.last_create_deduped = False
+        self.dedup_count = 0
+
+    @staticmethod
+    def _normalize_fingerprint_text(value: object) -> str:
+        text = "" if value is None else str(value)
+        return " ".join(text.strip().lower().split())
+
+    @classmethod
+    def _fingerprint(
+        cls,
+        *,
+        engine: object,
+        cwe_or_cve: object,
+        endpoint: object,
+        title: object,
+    ) -> str:
+        material = "|".join(
+            [
+                cls._normalize_fingerprint_text(cwe_or_cve),
+                cls._normalize_fingerprint_text(endpoint),
+                cls._normalize_fingerprint_text(title),
+            ]
+        )
+        return hashlib.sha256(material.encode("utf-8")).hexdigest()[:64]
 
     async def get(self, finding_id: uuid.UUID) -> Finding | None:
         """Return the finding by primary key, or ``None``. Tenant isolation
@@ -132,6 +158,7 @@ class FindingRepository:
         endpoint: str | None = None,
         payload: str | None = None,
         evidence: dict | None = None,
+        fingerprint: str | None = None,
         poc: str | None = None,
         verified_by: str | None = None,
         status: FindingStatus = FindingStatus.NEW,
@@ -143,6 +170,43 @@ class FindingRepository:
         boundaries. The denormalized ``engagement_id`` / ``org_id`` are stored
         alongside ``run_id`` for report scoping and Phase-3 row-level security.
         """
+        engine = None
+        if isinstance(evidence, dict):
+            engine = evidence.get("engine")
+        cwe_or_cve = cwe
+        if not cwe_or_cve and isinstance(evidence, dict):
+            cwe_or_cve = evidence.get("cve")
+        fingerprint = fingerprint or self._fingerprint(
+            engine=engine or "strix",
+            cwe_or_cve=cwe_or_cve,
+            endpoint=endpoint,
+            title=title,
+        )
+
+        stmt = select(Finding).where(
+            Finding.engagement_id == engagement_id,
+            Finding.fingerprint == fingerprint,
+        )
+        existing = (await self.session.execute(stmt)).scalars().first()
+        self.last_create_deduped = existing is not None
+        if existing is not None:
+            if isinstance(existing.evidence, dict):
+                evidence_dict = dict(existing.evidence)
+            else:
+                evidence_dict = {}
+            also_found_by = []
+            raw_also = evidence_dict.get("also_found_by")
+            if isinstance(raw_also, list):
+                also_found_by = [str(x) for x in raw_also if x]
+            engine_name = str(engine or "strix")
+            if engine_name not in also_found_by:
+                also_found_by.append(engine_name)
+            evidence_dict["also_found_by"] = also_found_by
+            existing.evidence = evidence_dict
+            await self.session.flush()
+            self.dedup_count += 1
+            return existing
+
         finding = Finding(
             run_id=run_id,
             engagement_id=engagement_id,
@@ -151,6 +215,7 @@ class FindingRepository:
             severity=severity,
             cwe=cwe,
             endpoint=endpoint,
+            fingerprint=fingerprint,
             payload=payload,
             evidence=evidence,
             poc=poc,
@@ -160,4 +225,5 @@ class FindingRepository:
         )
         self.session.add(finding)
         await self.session.flush()
+        self.last_create_deduped = False
         return finding

@@ -123,6 +123,60 @@ RUN apt-get update \
     && apt-get purge -y --auto-remove curl \
     && rm -rf /var/lib/apt/lists/*
 
+# --- Opengrep engine (SAST, Semgrep-compatible) ---------------------------
+# app/engine/opengrep_runner.py scans REPO targets by cloning them into the run dir
+# and invoking `opengrep scan --json`. Install the standalone Linux release binary
+# for the build arch (latest tag via the GitHub API).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl git unzip \
+    && OPENGREP_VER=$(curl -fsSL https://api.github.com/repos/opengrep/opengrep/releases/latest \
+         | grep -oP '"tag_name":\s*"v\K[^"]+') \
+    && ARCH=$(dpkg --print-architecture) \
+    && case "$ARCH" in amd64) OGARCH=x86_64 ;; arm64) OGARCH=arm64 ;; *) OGARCH="$ARCH" ;; esac \
+    && curl -fsSL -o /tmp/opengrep.zip \
+         "https://github.com/opengrep/opengrep/releases/download/v${OPENGREP_VER}/opengrep_${OPENGREP_VER}_linux_${OGARCH}.zip" \
+    && unzip -o /tmp/opengrep.zip -d /opt/opengrep \
+    && ln -sf "$(find /opt/opengrep -name opengrep | head -n1)" /usr/local/bin/opengrep \
+    && chmod +x /usr/local/bin/opengrep \
+    && rm -f /tmp/opengrep.zip \
+    && apt-get purge -y --auto-remove curl unzip \
+    && rm -rf /var/lib/apt/lists/*
+
+# --- OWASP ZAP engine (DAST) ----------------------------------------------
+# app/engine/zap_runner.py runs the baseline scanner one target at a time. This is
+# the heaviest layer: Java runtime + official ZAP cross-platform zip into /opt/zap.
+# TODO: consider a separate zap sidecar image if this layer bloats too much.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl default-jre-headless unzip \
+    && ZAP_VER=$(curl -fsSL https://api.github.com/repos/zaproxy/zaproxy/releases/latest \
+         | grep -oP '"tag_name":\s*"v\K[^"]+') \
+    && curl -fsSL -o /tmp/zap.zip \
+         "https://github.com/zaproxy/zaproxy/releases/download/v${ZAP_VER}/ZAP_${ZAP_VER}_Crossplatform.zip" \
+    && unzip -o /tmp/zap.zip -d /opt/zap \
+    && ln -sf "$(find /opt/zap -name zap-baseline.py | head -n1)" /usr/local/bin/zap-baseline.py \
+    && ln -sf "$(find /opt/zap -name zap.sh | head -n1)" /usr/local/bin/zap.sh \
+    && chmod +x /usr/local/bin/zap-baseline.py /usr/local/bin/zap.sh \
+    && rm -f /tmp/zap.zip \
+    && apt-get purge -y --auto-remove curl unzip \
+    && rm -rf /var/lib/apt/lists/*
+
+# --- Naabu engine (port discovery) ----------------------------------------
+# app/engine/naabu_runner.py scans DOMAIN/IP_RANGE targets for open ports. Install
+# the standalone binary, plus libpcap-dev for raw socket/packet dependencies.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl libpcap-dev unzip \
+    && NAABU_VER=$(curl -fsSL https://api.github.com/repos/projectdiscovery/naabu/releases/latest \
+         | grep -oP '"tag_name":\s*"v\K[^"]+') \
+    && ARCH=$(dpkg --print-architecture) \
+    && case "$ARCH" in amd64) NAARCH=amd64 ;; arm64) NAARCH=arm64 ;; *) NAARCH="$ARCH" ;; esac \
+    && curl -fsSL -o /tmp/naabu.zip \
+         "https://github.com/projectdiscovery/naabu/releases/download/v${NAABU_VER}/naabu_${NAABU_VER}_linux_${NAARCH}.zip" \
+    && unzip -o /tmp/naabu.zip -d /usr/local/bin naabu \
+    && chmod +x /usr/local/bin/naabu \
+    && rm -f /tmp/naabu.zip \
+    && apt-get purge -y --auto-remove curl unzip \
+    && rm -rf /var/lib/apt/lists/*
+
 # --- engine #5: Prowler (CSPM cloud posture, Apache-2.0) --------------------
 # app/engine/prowler_runner.py scans gate-cleared CLOUD_ACCOUNT targets. Prowler is
 # a heavy Python package with its own strict boto3/pydantic pins, so it is installed

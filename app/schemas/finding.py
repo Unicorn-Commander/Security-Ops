@@ -24,6 +24,7 @@ class FindingStatusUpdate(BaseModel):
     """
 
     status: FindingStatus
+    closure_reason: str | None = None
 
 
 class FindingRead(BaseModel):
@@ -40,11 +41,15 @@ class FindingRead(BaseModel):
     endpoint: str | None = None
     payload: str | None = None
     evidence: dict[str, Any] | None = None
+    fingerprint: str | None = None
     poc: str | None = None
     # Model/profile that confirmed the finding in the hybrid sweep+verify flow.
     verified_by: str | None = None
     status: FindingStatus
     # Brigade ticket / PR id once handed off.
     handoff_ref: str | None = None
+    closure_reason: str | None = None
+    closed_by: str | None = None
+    closed_at: datetime | None = None
     created_at: datetime
     updated_at: datetime

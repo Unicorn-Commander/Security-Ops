@@ -38,6 +38,8 @@ models, schemas, repositories, audit.writer}. Nothing imports engine.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import inspect
 import json
 import logging
 import os
@@ -363,6 +365,8 @@ class ParsedVulnerability:
     ) -> dict[str, Any]:
         """Map to ``FindingRepository.create(**fields)`` kwargs (denormalized FKs per
         the findings table: run_id, engagement_id, org_id)."""
+        engine = _to_str(self.evidence.get("engine")) or "strix"
+        cwe_or_cve = self.cwe or self.evidence.get("cve")
         return {
             "run_id": run.id,
             "engagement_id": engagement.id,
@@ -371,6 +375,12 @@ class ParsedVulnerability:
             "severity": self.severity,
             "cwe": self.cwe,
             "endpoint": self.endpoint,
+            "fingerprint": _finding_fingerprint(
+                engine=engine,
+                cwe_or_cve=cwe_or_cve,
+                endpoint=self.endpoint,
+                title=self.title,
+            ),
             "payload": self.payload,
             "evidence": self.evidence,
             "poc": self.poc,
@@ -434,6 +444,22 @@ def _normalize_cwe(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return f"CWE-{text}" if text.isdigit() else text
+
+
+def _normalize_fingerprint_text(value: Any) -> str:
+    text = _to_str(value) or ""
+    return " ".join(text.strip().lower().split())
+
+
+def _finding_fingerprint(*, engine: Any, cwe_or_cve: Any, endpoint: Any, title: Any) -> str:
+    material = "|".join(
+        [
+            _normalize_fingerprint_text(cwe_or_cve),
+            _normalize_fingerprint_text(endpoint),
+            _normalize_fingerprint_text(title),
+        ]
+    )
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()[:64]
 
 
 def _vuln_from_dict(item: dict[str, Any]) -> ParsedVulnerability:
@@ -890,9 +916,12 @@ class StrixRunner:
             except OSError:  # pragma: no cover
                 pass
 
-        return self._build_result(
+        result = self._build_result(
             invocation, returncode=returncode, error=error, stopped=stopped
         )
+        if inspect.isawaitable(result):
+            result = await result
+        return result
 
     def _build_result(
         self,
@@ -1039,27 +1068,33 @@ class StrixRunner:
         verified_by: str | None,
     ) -> list[Finding]:
         created: list[Finding] = []
+        deduped = 0
         for vuln in result.findings:
             fields = vuln.to_finding_fields(run=run, engagement=engagement, verified_by=verified_by)
             finding = await self.findings.create(**fields)
             created.append(finding)
-            await record_event(
-                self.session,
-                action=AuditAction.FINDING_RECORDED,
-                actor=actor,
-                org_id=run.org_id,
-                engagement_id=engagement.id,
-                run_id=run.id,
-                target=vuln.endpoint,
-                detail={
-                    "title": vuln.title,
-                    "severity": vuln.severity.value,
-                    "cwe": vuln.cwe,
-                },
-            )
+            if getattr(self.findings, "last_create_deduped", False):
+                deduped += 1
+            else:
+                await record_event(
+                    self.session,
+                    action=AuditAction.FINDING_RECORDED,
+                    actor=actor,
+                    org_id=run.org_id,
+                    engagement_id=engagement.id,
+                    run_id=run.id,
+                    target=vuln.endpoint,
+                    detail={
+                        "title": vuln.title,
+                        "severity": vuln.severity.value,
+                        "cwe": vuln.cwe,
+                    },
+                )
         if created:
             await self.session.flush()
             log.info("strix.findings.stored run=%s count=%d", run.id, len(created))
+        if deduped:
+            log.info("strix.findings.deduped run=%s count=%d", run.id, deduped)
         return created
 
     async def _terminal(
@@ -1125,8 +1160,9 @@ class StrixRunner:
 
 def _runner_for_engine(engine: str | None, session: "AsyncSession") -> "StrixRunner":
     """Pick the engine runner for a run (all imported lazily to avoid import cycles):
-    ``nuclei`` → :class:`NucleiRunner`, ``gitleaks`` → :class:`GitleaksRunner`,
-    ``trivy`` → :class:`TrivyRunner`; anything else → the default :class:`StrixRunner`.
+    ``nuclei`` / ``gitleaks`` / ``trivy`` / ``prowler`` / ``opengrep`` / ``zap`` /
+    ``naabu`` map to their dedicated runners; anything else falls back to the default
+    :class:`StrixRunner`.
     Every runner shares the gate-cleared execute pipeline (only the three engine
     seams — ``prepare`` / ``_build_result`` / ``_engine_completed`` — differ)."""
     name = (engine or "strix").strip().lower()
@@ -1134,6 +1170,18 @@ def _runner_for_engine(engine: str | None, session: "AsyncSession") -> "StrixRun
         from app.engine.nuclei_runner import NucleiRunner
 
         return NucleiRunner(session)
+    if name == "opengrep":
+        from app.engine.opengrep_runner import OpengrepRunner
+
+        return OpengrepRunner(session)
+    if name == "zap":
+        from app.engine.zap_runner import ZapRunner
+
+        return ZapRunner(session)
+    if name == "naabu":
+        from app.engine.naabu_runner import NaabuRunner
+
+        return NaabuRunner(session)
     if name == "gitleaks":
         from app.engine.gitleaks_runner import GitleaksRunner
 
