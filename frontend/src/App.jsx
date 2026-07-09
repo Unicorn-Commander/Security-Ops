@@ -9,6 +9,7 @@ import Targets from './pages/Targets.jsx';
 import Runs from './pages/Runs.jsx';
 import RunDetail from './pages/RunDetail.jsx';
 import Findings from './pages/Findings.jsx';
+import AttackPath from './pages/AttackPath.jsx';
 import Help from './features/help';
 import Settings from './features/settings';
 import AssistantDock from './features/assistant';
@@ -54,6 +55,7 @@ export default function App() {
               <Route path="/runs" element={<Runs />} />
               <Route path="/runs/:runId" element={<RunDetail />} />
               <Route path="/findings" element={<Findings />} />
+              <Route path="/attack-path" element={<AttackPath />} />
               <Route path="/help" element={<Help />} />
               <Route path="/settings" element={<Settings />} />
               <Route path="*" element={<NotFound />} />

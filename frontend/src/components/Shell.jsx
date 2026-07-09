@@ -2,7 +2,7 @@
  * and the signature "authorization gate armed" indicator — the product's identity. */
 import React from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
-import { GridIcon, ShieldIcon, TargetIcon, PlayIcon, BugIcon, LockIcon, MenuIcon, AlertIcon, XIcon } from './icons.jsx';
+import { GridIcon, ShieldIcon, TargetIcon, PlayIcon, BugIcon, GitIcon, LockIcon, MenuIcon, AlertIcon, XIcon } from './icons.jsx';
 import { isDemo } from '../lib/api.js';
 import { useResource } from '../lib/hooks.js';
 import { api } from '../lib/api.js';
@@ -16,6 +16,7 @@ const NAV = [
   { to: '/targets', label: 'Targets', icon: TargetIcon, key: 'targets', section: 'targets', hint: 'Registered & attested assets' },
   { to: '/runs', label: 'Runs', icon: PlayIcon, key: 'runs', section: 'runs', hint: 'Engine executions' },
   { to: '/findings', label: 'Findings', icon: BugIcon, key: 'findings', section: 'findings', hint: 'Open findings' },
+  { to: '/attack-path', label: 'Attack path', icon: GitIcon, key: null, section: 'findings', hint: 'Exposure graph from findings' },
 ];
 
 function GateBadge() {
