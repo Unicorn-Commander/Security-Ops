@@ -19,11 +19,14 @@ from app.auth.sso import AuthUser, UserRole
 from app.authz.errors import AuthorizationDenied
 from app.mcp.auth import McpAuthError, McpContext, mcp_scope, set_current_token
 from app.mcp.server import (
+    _attack_path_impl,
     _engagements_scope_check_impl,
     _overview_impl,
     _runs_start_impl,
     _targets_list_impl,
 )
+from app.models.finding import Finding, FindingSeverity, FindingStatus
+from app.models.run import Run, RunMode, RunStatus
 from app.schemas.run import RunCreate
 from app.security.pat import create_pat
 from tests.conftest import make_engagement, make_org, make_target
@@ -137,3 +140,42 @@ async def test_overview_and_list_tools_are_org_scoped(db_session):
     page = await _targets_list_impl(ctx, limit=50, offset=0)
     assert page["total"] == 1
     assert page["items"][0]["value"] == "a.example.com"
+
+
+async def test_attack_path_tool_derives_graph_and_is_tenant_isolated(db_session):
+    import uuid
+
+    import pytest
+
+    from app.core.errors import NotFoundError
+
+    org = await make_org(db_session, slug="pilot")
+    other = await make_org(db_session, slug="other")
+    engagement = await make_engagement(db_session, org)
+    other_engagement = await make_engagement(db_session, other)
+
+    run = Run(
+        id=uuid.uuid4(), engagement_id=engagement.id, org_id=org.id,
+        mode=RunMode.STANDARD, model_profile="hybrid-local-sweep-verify",
+        targets=["example.com"], status=RunStatus.COMPLETED,
+    )
+    db_session.add(run)
+    await db_session.flush()
+    db_session.add(Finding(
+        id=uuid.uuid4(), run_id=run.id, engagement_id=engagement.id, org_id=org.id,
+        title="SQLi", severity=FindingSeverity.CRITICAL, status=FindingStatus.NEW,
+        endpoint="https://app.example.com/login",
+    ))
+    await db_session.flush()
+
+    ctx = _ctx(db_session, org)
+    graph = await _attack_path_impl(ctx, engagement.id)
+    # Same console shape: one host derived from the finding, worst severity rolled up.
+    assert graph["summary"]["finding_count"] == 1
+    assert graph["summary"]["host_count"] == 1
+    assert graph["summary"]["max_severity"] == "CRITICAL"
+    assert any(n["type"] == "host" and n["label"] == "app.example.com" for n in graph["nodes"])
+
+    # Another org's engagement is a 404 for this caller — same gate as the HTTP route.
+    with pytest.raises(NotFoundError):
+        await _attack_path_impl(ctx, other_engagement.id)

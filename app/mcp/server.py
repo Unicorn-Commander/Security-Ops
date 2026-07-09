@@ -58,6 +58,7 @@ from app.schemas.pat import PATRead
 from app.schemas.run import RunCreate, RunRead
 from app.schemas.target import AttestationRequest, TargetCreate, TargetRead
 from app.security.pat import list_pats, revoke_pat
+from app.services.attack_path import build_attack_path_graph
 from app.services.engagements import (
     activate_engagement,
     create_engagement,
@@ -215,6 +216,22 @@ async def _engagements_report_impl(
     engagement = await _load_engagement(ctx, engagement_id)
     report_markdown = await generate_engagement_report(ctx.session, engagement=engagement)
     return {"engagement_id": str(engagement.id), "report_markdown": report_markdown}
+
+
+async def _attack_path_impl(
+    ctx: McpContext, engagement_id: uuid.UUID
+) -> dict[str, Any]:
+    """Derive the engagement's attack-path graph from its findings (read-only).
+
+    Tenant-checked via ``_load_engagement``; delegates to the SAME pure builder the
+    HTTP route uses, so an agent and the console see the identical graph. Mutates
+    nothing.
+    """
+    engagement = await _load_engagement(ctx, engagement_id)
+    findings, _total = await FindingRepository(ctx.session).list_for_engagement(
+        engagement.id
+    )
+    return build_attack_path_graph(engagement, findings).model_dump(mode="json")
 
 
 async def _targets_list_impl(ctx: McpContext, *, limit: int, offset: int) -> dict[str, Any]:
@@ -458,6 +475,15 @@ async def engagements_report(engagement_id: str) -> dict:
     """Export the branded engagement report as ``{engagement_id, report_markdown}``."""
     async with mcp_scope() as ctx:
         return await _engagements_report_impl(ctx, _as_uuid(engagement_id, "engagement_id"))
+
+
+@mcp.tool()
+async def engagements_attack_path(engagement_id: str) -> dict:
+    """Derive the engagement's attack-path/exposure graph from its findings
+    (engagement root -> affected host -> finding leaf, severity rolled up). Read-only,
+    your org only — the same graph the console renders."""
+    async with mcp_scope() as ctx:
+        return await _attack_path_impl(ctx, _as_uuid(engagement_id, "engagement_id"))
 
 
 @mcp.tool()
