@@ -65,6 +65,85 @@ function overview() {
   };
 }
 
+/* Host extraction — mirrors app.services.attack_path._host_of (URL / host:port /
+ * bare host / bracketed IPv6). Returns null when no host can be parsed. */
+function hostOf(endpoint) {
+  const text = String(endpoint || '').trim();
+  if (!text) return null;
+  let netloc = text.includes('://') ? text.split('://')[1] || '' : text;
+  if (!netloc) netloc = text;
+  netloc = netloc.split('@').pop();
+  netloc = netloc.split('/')[0];
+  let host;
+  if (netloc.startsWith('[')) host = netloc.slice(1).split(']')[0];
+  else if ((netloc.match(/:/g) || []).length === 1) host = netloc.split(':')[0];
+  else host = netloc;
+  host = host.trim().replace(/\.+$/, '').toLowerCase();
+  return host || null;
+}
+
+const AP_SEV_RANK = { INFO: 0, LOW: 1, MEDIUM: 2, HIGH: 3, CRITICAL: 4 };
+function maxSeverity(items) {
+  let best = null, bestRank = -1;
+  for (const f of items) { const r = AP_SEV_RANK[f.severity] ?? -1; if (r > bestRank) { bestRank = r; best = f.severity; } }
+  return best;
+}
+
+/* Attack-path / exposure graph — client mirror of
+ * app.services.attack_path.build_attack_path_graph (engagement root -> host ->
+ * finding leaf, severity rolled up, deterministic ordering). */
+function attackPath(engId) {
+  const eng = db.engagements.find((e) => e.id === engId);
+  if (!eng) { const err = new Error('Engagement not found'); err.code = 'not_found'; err.status = 404; throw err; }
+  const findings = db.findings.filter((f) => f.engagement_id === engId);
+
+  const byHost = new Map();
+  for (const f of findings) {
+    const h = hostOf(f.endpoint);
+    const key = h === null ? ' ' : h;
+    if (!byHost.has(key)) byHost.set(key, { host: h, items: [] });
+    byHost.get(key).items.push(f);
+  }
+  const buckets = [...byHost.values()].sort((a, b) => {
+    const au = a.host === null, bu = b.host === null;
+    if (au !== bu) return au ? 1 : -1; // unspecified bucket always last
+    const ar = AP_SEV_RANK[maxSeverity(a.items)] ?? -1, br = AP_SEV_RANK[maxSeverity(b.items)] ?? -1;
+    if (ar !== br) return br - ar; // most-severe host first
+    return (a.host || '').localeCompare(b.host || '');
+  });
+
+  const nodes = [], edges = [];
+  const engNodeId = `engagement:${eng.id}`;
+  const rootSev = maxSeverity(findings);
+  nodes.push({ id: engNodeId, type: 'engagement', label: eng.name, severity: rootSev, finding_count: findings.length, host_count: buckets.length });
+
+  const bySeverity = {};
+  for (const f of findings) bySeverity[f.severity] = (bySeverity[f.severity] || 0) + 1;
+
+  for (const b of buckets) {
+    const hostId = b.host === null ? 'host:__unspecified__' : `host:${b.host}`;
+    const hostLabel = b.host === null ? '(unspecified host)' : b.host;
+    const hostSev = maxSeverity(b.items);
+    nodes.push({ id: hostId, type: 'host', label: hostLabel, severity: hostSev, finding_count: b.items.length });
+    edges.push({ source: engNodeId, target: hostId, kind: 'engagement-host', severity: hostSev, weight: b.items.length });
+    const sorted = [...b.items].sort((x, y) => {
+      const xr = AP_SEV_RANK[x.severity] ?? -1, yr = AP_SEV_RANK[y.severity] ?? -1;
+      if (xr !== yr) return yr - xr;
+      return String(x.title).localeCompare(String(y.title)) || String(x.id).localeCompare(String(y.id));
+    });
+    for (const f of sorted) {
+      const fid = `finding:${f.id}`;
+      nodes.push({ id: fid, type: 'finding', label: f.title, severity: f.severity, cwe: f.cwe, status: f.status, endpoint: f.endpoint, finding_id: f.id });
+      edges.push({ source: hostId, target: fid, kind: 'host-finding', severity: f.severity, weight: 1 });
+    }
+  }
+
+  return {
+    engagement_id: eng.id, engagement_name: eng.name, nodes, edges,
+    summary: { node_count: nodes.length, edge_count: edges.length, host_count: buckets.length, finding_count: findings.length, by_severity: bySeverity, max_severity: rootSev },
+  };
+}
+
 function scopeCheck(engId, target) {
   const eng = db.engagements.find((e) => e.id === engId);
   if (!eng) return { allowed: false, code: 'engagement_inactive', reason: 'engagement not found', target, violations: ['engagement_not_found'] };
@@ -103,6 +182,7 @@ export async function demoHandle(method, path, body) {
     if (seg[2] === 'activate' && method === 'POST') { if (eng) eng.status = 'ACTIVE'; return clone(eng); }
     if (seg[2] === 'stop' && method === 'POST') { if (eng) { eng.status = 'STOPPED'; eng.emergency_stopped = true; } return clone(eng); }
     if (seg[2] === 'scope' && seg[3] === 'check' && method === 'POST') return scopeCheck(id, body.target);
+    if (seg[2] === 'attack-path' && method === 'GET') return attackPath(id);
     if (seg[2] === 'report') {
       const md = demoReport(eng);
       return params.get('format') === 'json' ? { engagement_id: id, report_markdown: md } : md;

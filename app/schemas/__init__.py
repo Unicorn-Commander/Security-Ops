@@ -6,6 +6,12 @@ convenience for ``from app.schemas import EngagementRead`` and to give the packa
 a single public surface.
 """
 
+from app.schemas.attack_path import (
+    AttackPathEdge,
+    AttackPathGraph,
+    AttackPathNode,
+    AttackPathSummary,
+)
 from app.schemas.common import Page
 from app.schemas.engagement import (
     EngagementCreate,
@@ -22,6 +28,11 @@ from app.schemas.run import RunCreate, RunRead
 from app.schemas.target import AttestationRequest, TargetCreate, TargetRead
 
 __all__ = [
+    # attack-path
+    "AttackPathEdge",
+    "AttackPathGraph",
+    "AttackPathNode",
+    "AttackPathSummary",
     # common
     "Page",
     # engagement

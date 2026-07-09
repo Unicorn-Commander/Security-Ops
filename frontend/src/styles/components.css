@@ -638,3 +638,14 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
 :root[data-theme="light"] .skel::after {
   background: linear-gradient(90deg, transparent, rgba(16, 22, 44, 0.06), transparent);
 }
+
+/* ---- Attack-path exposure graph (hand-rolled inline SVG) ---- */
+.apnode { transition: opacity var(--dur-1) var(--ease); }
+.apnode[role="link"] { cursor: pointer; }
+.apnode[role="link"]:hover { opacity: 0.85; }
+.apnode[role="link"]:focus { outline: none; }
+.apnode[role="link"]:focus-visible rect:first-of-type {
+  stroke: var(--accent) !important;
+  stroke-width: 2;
+  stroke-opacity: 1 !important;
+}

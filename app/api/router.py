@@ -17,8 +17,9 @@ Imports are strict on purpose: this module fails to import if any sub-router is
 broken, so ``app.main`` degrades to core-only (``/health``, ``/version``) rather
 than mounting a partially-wired API. Ordering is irrelevant to correctness — the
 sub-routers share no colliding paths (``/engagements/{id}/runs`` lives in the
-runs router; ``/engagements/{id}/activate|stop|scope/check|report`` in the
-engagements router) — but they are listed in the spec's resource order.
+runs router; ``/engagements/{id}/attack-path`` in the attack-path router;
+``/engagements/{id}/activate|stop|scope/check|report`` in the engagements
+router) — but they are listed in the spec's resource order.
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from app.api.assistant import router as assistant_router
+from app.api.attack_path import router as attack_path_router
 from app.api.engagements import router as engagements_router
 from app.api.findings import router as findings_router
 from app.api.me import router as me_router
@@ -37,6 +39,7 @@ from app.api.targets import router as targets_router
 api_router = APIRouter(prefix="/api/v1")
 
 api_router.include_router(engagements_router)
+api_router.include_router(attack_path_router)
 api_router.include_router(targets_router)
 api_router.include_router(runs_router)
 api_router.include_router(findings_router)
