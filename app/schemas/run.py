@@ -50,8 +50,8 @@ class RunCreate(BaseModel):
     @classmethod
     def _known_engine(cls, value: str) -> str:
         v = (value or "strix").strip().lower()
-        if v not in ("strix", "nuclei", "gitleaks", "trivy"):
-            raise ValueError("engine must be 'strix', 'nuclei', 'gitleaks', or 'trivy'")
+        if v not in ("strix", "nuclei", "gitleaks", "trivy", "prowler"):
+            raise ValueError("engine must be 'strix', 'nuclei', 'gitleaks', 'trivy', or 'prowler'")
         return v
 
 

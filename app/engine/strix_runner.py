@@ -1142,6 +1142,10 @@ def _runner_for_engine(engine: str | None, session: "AsyncSession") -> "StrixRun
         from app.engine.trivy_runner import TrivyRunner
 
         return TrivyRunner(session)
+    if name == "prowler":
+        from app.engine.prowler_runner import ProwlerRunner
+
+        return ProwlerRunner(session)
     return StrixRunner(session)
 
 

@@ -13,11 +13,15 @@ import {
 } from '../components/icons.jsx';
 import { fmtDate } from '../lib/format.js';
 
-const KINDS = ['DOMAIN', 'URL', 'IP_RANGE', 'REPO'];
-const KIND_ICON = { DOMAIN: GlobeIcon, URL: GlobeIcon, IP_RANGE: ServerIcon, REPO: GitIcon };
+const KINDS = ['DOMAIN', 'URL', 'IP_RANGE', 'REPO', 'IMAGE', 'CLOUD_ACCOUNT'];
+const KIND_ICON = { DOMAIN: GlobeIcon, URL: GlobeIcon, IP_RANGE: ServerIcon, REPO: GitIcon, IMAGE: ServerIcon, CLOUD_ACCOUNT: ServerIcon };
 // OWNED first — the self-owned escape hatch (your own suite). Proof methods are verified live by the server.
 const METHODS = ['OWNED', 'CHECKBOX', 'TYPED_CONFIRMATION', 'DNS_TXT', 'FILE_DROP', 'HTTP_HEADER'];
 const PROOF_METHODS = ['DNS_TXT', 'FILE_DROP', 'HTTP_HEADER'];
+// Cloud-account possession proof: assume a role granted with our per-target external
+// ID (not admin-only — the assumption IS the authorization). Offered for CLOUD_ACCOUNT
+// targets when /me capabilities say the install switch is on.
+const CLOUD_METHODS = ['CLOUD_ROLE'];
 // Admin-only "authorized-operator" methods that skip live ownership proof for a
 // recorded human authorization. Appended to the picker only when /me capabilities
 // say the caller may use them (admin + install-switch). Justification-required.
@@ -25,7 +29,7 @@ const PRIVILEGED_METHODS = ['SELF_ATTESTED', 'BREAK_GLASS'];
 const METHOD_LABEL = {
   OWNED: 'Owned', CHECKBOX: 'Checkbox', TYPED_CONFIRMATION: 'Typed',
   DNS_TXT: 'DNS TXT', FILE_DROP: 'File drop', HTTP_HEADER: 'HTTP header',
-  SELF_ATTESTED: 'Self-attest (admin)', BREAK_GLASS: 'Break-glass (admin)',
+  CLOUD_ROLE: 'Cloud role', SELF_ATTESTED: 'Self-attest (admin)', BREAK_GLASS: 'Break-glass (admin)',
 };
 
 function KindIcon({ kind, ...rest }) {
@@ -82,8 +86,8 @@ function RegisterDrawer({ onClose, onCreated }) {
         <div className="field">
           <label className="label">Value</label>
           <input className="input mono" autoFocus value={value} onChange={(e) => setValue(e.target.value)}
-            placeholder="brigade.unicorncommander.ai · https://app… · 10.0.0.0/24 · repo url" />
-          <span className="hint">Domain, URL, CIDR range, or repository — matched against engagement scope.</span>
+            placeholder="brigade.unicorncommander.ai · https://app… · 10.0.0.0/24 · repo · image · aws:123456789012" />
+          <span className="hint">Domain, URL, CIDR, repository, image, or cloud account (aws:&lt;id&gt; / gcp:&lt;project&gt; / azure:&lt;sub&gt;) — matched against engagement scope.</span>
         </div>
         <div className="field">
           <label className="label">Label</label>
@@ -143,6 +147,25 @@ function ProofBlock({ method, challenge, loading, error }) {
   );
 }
 
+/* ----------------------------------------------------- Cloud proof block */
+function CloudProofBlock({ challenge, loading, error }) {
+  if (loading) return <div className="hint" style={{ padding: '4px 0' }}>Loading role-grant instructions…</div>;
+  if (error) return <ErrorBanner error={error} />;
+  if (!challenge || !challenge.external_id) return null;
+  const policy = challenge.aws_trust_policy ? JSON.stringify(challenge.aws_trust_policy, null, 2) : null;
+  return (
+    <div className="card" style={{ background: 'var(--surface-inset)' }}>
+      <div className="card__head"><KeyIcon size={15} style={{ color: 'var(--accent-strong)' }} /><h2>Grant the scanner role</h2></div>
+      <div className="card__body stack" style={{ gap: 'var(--s-4)' }}>
+        <p className="hint" style={{ margin: 0 }}>{challenge.how || 'Create a role trusting our scanner principal and requiring this external ID, then attest with the role ARN.'}</p>
+        <ProofRow label="External ID (require in trust policy)" value={challenge.external_id} />
+        <ProofRow label="Scanner principal (trust this)" value={challenge.scanner_principal} />
+        {policy && <ProofRow label="AWS trust policy" value={policy} />}
+      </div>
+    </div>
+  );
+}
+
 /* --------------------------------------------------------------- Attest */
 function AttestDrawer({ target, onClose, onAttested }) {
   const toast = useToast();
@@ -150,6 +173,7 @@ function AttestDrawer({ target, onClose, onAttested }) {
   const [ack, setAck] = React.useState(false);
   const [typed, setTyped] = React.useState('');
   const [justification, setJustification] = React.useState('');
+  const [roleArn, setRoleArn] = React.useState('');
   const [expiresAt, setExpiresAt] = React.useState('');
   const { run, busy, error } = useMutation();
 
@@ -160,13 +184,16 @@ function AttestDrawer({ target, onClose, onAttested }) {
     api('/me').then((m) => { if (live) setCaps(m.capabilities || {}); }).catch(() => {});
     return () => { live = false; };
   }, []);
-  const methods = [
-    ...METHODS,
-    ...(caps?.self_attest ? ['SELF_ATTESTED'] : []),
-    ...(caps?.break_glass ? ['BREAK_GLASS'] : []),
-  ];
+  // Cloud accounts prove authorization by a role grant; other kinds use the standard
+  // methods. CLOUD_ROLE is offered only for a CLOUD_ACCOUNT target with the switch on.
+  const isCloudAccount = target.kind === 'CLOUD_ACCOUNT';
+  const methods = isCloudAccount
+    ? [...(caps?.cloud_role ? CLOUD_METHODS : []), 'OWNED', 'CHECKBOX', 'TYPED_CONFIRMATION',
+       ...(caps?.self_attest ? ['SELF_ATTESTED'] : []), ...(caps?.break_glass ? ['BREAK_GLASS'] : [])]
+    : [...METHODS, ...(caps?.self_attest ? ['SELF_ATTESTED'] : []), ...(caps?.break_glass ? ['BREAK_GLASS'] : [])];
 
   const isProof = PROOF_METHODS.includes(method);
+  const isCloud = CLOUD_METHODS.includes(method);
   const isTyped = method === 'TYPED_CONFIRMATION';
   const isPrivileged = PRIVILEGED_METHODS.includes(method);
   const isBreakGlass = method === 'BREAK_GLASS';
@@ -176,7 +203,7 @@ function AttestDrawer({ target, onClose, onAttested }) {
   const [chLoading, setChLoading] = React.useState(false);
   const [chError, setChError] = React.useState(null);
   React.useEffect(() => {
-    if (!isProof || challenge || chLoading) return undefined;
+    if (!(isProof || isCloud) || challenge || chLoading) return undefined;
     let live = true;
     setChLoading(true); setChError(null);
     api(`/targets/${target.id}/attestation-challenge`)
@@ -184,11 +211,12 @@ function AttestDrawer({ target, onClose, onAttested }) {
       .catch((e) => { if (live) setChError(e); })
       .finally(() => { if (live) setChLoading(false); });
     return () => { live = false; };
-  }, [isProof, challenge, chLoading, target.id]);
+  }, [isProof, isCloud, challenge, chLoading, target.id]);
 
   const typedOk = !isTyped || typed.trim() === target.value;
   const justOk = !isPrivileged || justification.trim().length >= 8;
-  const canSubmit = ack && typedOk && justOk && !busy;
+  const roleOk = !isCloud || roleArn.trim().length > 0;
+  const canSubmit = ack && typedOk && justOk && roleOk && !busy;
 
   async function submit(e) {
     e.preventDefault();
@@ -196,6 +224,9 @@ function AttestDrawer({ target, onClose, onAttested }) {
     const body = { method, checkbox_ack: ack };
     if (typed.trim()) body.typed_confirmation = typed.trim();
     if (isPrivileged && justification.trim()) body.justification = justification.trim();
+    // CLOUD_ROLE carries the role to assume in evidence; the server assumes it with
+    // the target's external ID to prove authorization.
+    if (isCloud && roleArn.trim()) body.evidence = { role_arn: roleArn.trim() };
     if (expiresAt) body.expires_at = new Date(expiresAt).toISOString();
     try {
       await run(`/targets/${target.id}/attest`, { method: 'POST', body });
@@ -239,9 +270,11 @@ function AttestDrawer({ target, onClose, onAttested }) {
               ? 'Break-glass — authorizes this target with NO ownership proof. For authorized red-team / DFIR only. Admin-only, short-lived, and recorded to the immutable audit log.'
               : isPrivileged
                 ? 'Self-attest — skips live ownership proof for a recorded admin authorization. Time-boxed and audited.'
-                : isProof
-                  ? 'External asset — publish the proof below, then attest. The server verifies ownership live.'
-                  : 'Self-owned attestation — acknowledge authorization to record it.'}
+                : isCloud
+                  ? 'Cloud account — grant the scanner role below, then attest. The server proves authorization by assuming it with your external ID.'
+                  : isProof
+                    ? 'External asset — publish the proof below, then attest. The server verifies ownership live.'
+                    : 'Self-owned attestation — acknowledge authorization to record it.'}
           </span>
         </div>
 
@@ -273,6 +306,16 @@ function AttestDrawer({ target, onClose, onAttested }) {
         )}
 
         {isProof && <ProofBlock method={method} challenge={challenge} loading={chLoading} error={chError} />}
+
+        {isCloud && (<>
+          <CloudProofBlock challenge={challenge} loading={chLoading} error={chError} />
+          <div className="field">
+            <label className="label">Role ARN to assume <span className="muted" style={{ textTransform: 'none', letterSpacing: 0 }}>· required</span></label>
+            <input className="input mono" value={roleArn} onChange={(e) => setRoleArn(e.target.value)}
+              placeholder="arn:aws:iam::123456789012:role/SecurityOpsScanner" />
+            <span className="hint">The server assumes this role with the external ID above; being able to assume it proves you granted us scoped access to this account.</span>
+          </div>
+        </>)}
 
         {isTyped && (
           <div className="field">
