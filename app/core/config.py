@@ -82,6 +82,15 @@ class Settings(BaseSettings):
     # Identifies which runner claimed a queue row (audibility when scaled out).
     runner_id: str = "secops-runner"
 
+    # --- Live run trace (SSE step log) -----------------------------------
+    # GET /runs/{id}/events tails the append-only run_events table. How often the
+    # open stream polls for newly-committed trace rows (seconds; floored at 0.2).
+    sse_poll_seconds: float = 1.0
+    # Hard ceiling on a single SSE connection's lifetime (seconds) so a run that
+    # never reaches a terminal status can't hold a stream (and its pooled DB
+    # connection) open forever. 2h comfortably outlives a DEEP scan.
+    sse_max_seconds: float = 7200.0
+
     # --- Reporting + Brigade hand-off (spec §8) --------------------------
     # Brand wrapper applied around Strix's penetration_test_report.md on export.
     report_brand_name: str = "Security-Ops"

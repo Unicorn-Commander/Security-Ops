@@ -4,7 +4,7 @@
  * ledger. */
 import React from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
-import { api } from '../lib/api.js';
+import { api, streamRunEvents } from '../lib/api.js';
 import { useResource, useMutation } from '../lib/hooks.js';
 import {
   StatusBadge, Severity, Meter, EmptyState, SkeletonRows, ErrorBanner, Banner, CopyButton, useToast, useConfirm, SEV_VAR,
@@ -172,6 +172,136 @@ function Meta({ label, children }) {
   );
 }
 
+/* Per-event-type glyph + accent for the live trace. Unknown types fall back to a
+ * neutral dot so a new backend event kind still renders (the column is a free
+ * string by design). */
+const TRACE_ICON = {
+  queued: ClockIcon, running: PlayIcon, engine_spawned: ServerIcon, reasoning: ActivityIcon,
+  phase: CrosshairIcon, finding: BugIcon, verify: ShieldIcon,
+  completed: ShieldIcon, failed: StopIcon, stopped: StopIcon,
+};
+const TRACE_COLOR = {
+  finding: 'var(--warn)', completed: 'var(--ok)', failed: 'var(--danger)', stopped: 'var(--danger)',
+  verify: 'var(--accent-strong)', reasoning: 'var(--muted)', engine_spawned: 'var(--info)',
+  running: 'var(--info)', queued: 'var(--muted)', phase: 'var(--accent-strong)',
+};
+const TRACE_MAX = 500; // cap rendered rows so a chatty scan can't unbound the DOM
+
+/* LiveTrace — the run's genuine agent/engine step log, streamed over SSE. Unlike
+ * the data-derived PhaseStrip, these are REAL events the runner emitted (queued →
+ * reasoning → findings → terminal). Replays a terminal run's history and tails a
+ * live one, resuming from the last seq if the stream drops while still live. */
+function LiveTrace({ runId, live }) {
+  const [events, setEvents] = React.useState([]);
+  const [streaming, setStreaming] = React.useState(false);
+  const [err, setErr] = React.useState(null);
+  const scrollRef = React.useRef(null);
+  const lastSeqRef = React.useRef(0);
+  const liveRef = React.useRef(live);
+  liveRef.current = live;
+
+  React.useEffect(() => {
+    // Fresh stream when the run changes.
+    setEvents([]); setErr(null); lastSeqRef.current = 0;
+    const ctrl = new AbortController();
+    let cancelled = false;
+    let ended = false;
+
+    async function pump() {
+      setStreaming(true);
+      while (!cancelled && !ended) {
+        try {
+          await streamRunEvents(runId, {
+            afterSeq: lastSeqRef.current,
+            signal: ctrl.signal,
+            onEvent: (ev) => {
+              if (ev.id != null && Number.isFinite(ev.id)) {
+                lastSeqRef.current = Math.max(lastSeqRef.current, ev.id);
+              }
+              setEvents((prev) => {
+                const next = prev.concat(ev);
+                return next.length > TRACE_MAX ? next.slice(next.length - TRACE_MAX) : next;
+              });
+            },
+            onEnd: () => { ended = true; },
+          });
+        } catch (e) {
+          if (cancelled || e.name === 'AbortError') break;
+          setErr(e);
+        }
+        // Stream returned. Stop on terminal 'end' or once the run is no longer
+        // live; otherwise a live run whose stream dropped resumes from lastSeq.
+        if (ended || cancelled || !liveRef.current) break;
+        await new Promise((r) => setTimeout(r, 1500));
+      }
+      if (!cancelled) setStreaming(false);
+    }
+    pump();
+    return () => { cancelled = true; ctrl.abort(); };
+  }, [runId]);
+
+  // Follow the tail: keep the newest event in view as they stream in.
+  React.useEffect(() => {
+    const el = scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [events.length]);
+
+  return (
+    <div className="card" style={{ marginBottom: 'var(--s-6)' }}>
+      <div className="card__head">
+        <ActivityIcon size={16} style={{ color: 'var(--muted)' }} />
+        <h2>Live activity</h2>
+        <div className="spacer" />
+        {streaming ? (
+          <span className="statusdot"><i className="live" style={{ background: 'var(--info)' }} />streaming</span>
+        ) : (
+          <span className="muted" style={{ fontSize: 12 }}>{events.length > 0 ? 'trace complete' : ''}</span>
+        )}
+      </div>
+      {err && !events.length ? (
+        <div className="card__body">
+          <p className="muted" style={{ fontSize: 12.5 }}>
+            Live trace unavailable — {err.message}. The run’s findings below are unaffected.
+          </p>
+        </div>
+      ) : events.length === 0 ? (
+        <div className="card__body">
+          <p className="muted" style={{ fontSize: 12.5 }}>
+            {streaming || live
+              ? 'Waiting for the engine to emit its first step…'
+              : 'No activity trace was recorded for this run.'}
+          </p>
+        </div>
+      ) : (
+        <div ref={scrollRef} className="trace" role="log" aria-live="polite"
+          style={{ maxHeight: 340, overflowY: 'auto', padding: 'var(--s-4) var(--s-5)' }}>
+          {events.map((ev, i) => {
+            const type = ev.event || 'message';
+            const Icon = TRACE_ICON[type] || ActivityIcon;
+            const color = TRACE_COLOR[type] || 'var(--muted)';
+            const d = ev.data || {};
+            const msg = d.message || d.title || titleCase(type);
+            const ts = d.created_at;
+            return (
+              <div key={`${ev.id ?? 'x'}-${i}`} className="row-tight"
+                style={{ alignItems: 'flex-start', gap: 8, padding: '3px 0', fontSize: 12.5 }}>
+                <Icon size={13} style={{ color, flex: 'none', marginTop: 2 }} />
+                <span className="mono" style={{ color: 'var(--faint)', fontSize: 10.5, flex: 'none', width: 58, textAlign: 'right' }}>
+                  {type}
+                </span>
+                <span style={{ color: type === 'reasoning' ? 'var(--text-2)' : 'var(--text)', minWidth: 0, wordBreak: 'break-word', flex: 1 }}>
+                  {msg}
+                </span>
+                {ts && <span className="muted nowrap" style={{ fontSize: 10.5, flex: 'none' }} title={fmtDate(ts)}>{relTime(ts)}</span>}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function RunDetail() {
   const { runId } = useParams();
   const navigate = useNavigate();
@@ -312,6 +442,9 @@ export default function RunDetail() {
               )}
             </div>
           </div>
+
+          {/* Live activity — the run's genuine agent/engine step log (SSE) */}
+          <LiveTrace runId={runId} live={live} />
 
           {/* Cost & routing — local-vs-cloud economics, our genuine edge */}
           <CostPanel run={run} />

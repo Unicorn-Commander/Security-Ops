@@ -184,8 +184,12 @@ async def start_run(
             engagement_id=engagement.id,
         )
         await session.commit()
+        await _emit_queued(run)
     else:
         await session.commit()
+        # Emit QUEUED before launching so it can't be out-ordered by the worker's
+        # first RUNNING event (the trace's seq is monotonic per run).
+        await _emit_queued(run)
         _launch_worker(
             run_id=run.id, engagement_id=engagement.id, org_id=run.org_id, actor=actor
         )
@@ -263,6 +267,29 @@ async def _persist_gate_audit(session: AsyncSession) -> None:
             await session.rollback()
         except Exception:  # noqa: BLE001
             pass
+
+
+async def _emit_queued(run: Run) -> None:
+    """Best-effort QUEUED trace event so a subscriber's SSE stream opens with a
+    first step even before the runner flips the run to RUNNING. Never raises — a
+    trace line must not disturb run creation. Lazy import keeps the import graph
+    simple (the emitter opens its own committed, org-bound session)."""
+    try:
+        from app.services.run_events import emit_run_event
+
+        await emit_run_event(
+            run_id=run.id,
+            org_id=run.org_id,
+            event_type="queued",  # == RunEventType.QUEUED.value
+            message=f"{run.engine} run queued over {len(run.targets or [])} target(s)",
+            data={
+                "engine": run.engine,
+                "mode": _enum_value(run.mode),
+                "targets": list(run.targets or []),
+            },
+        )
+    except Exception:  # noqa: BLE001 - tracing must never disturb run creation
+        logger.debug("start_run: queued trace emit failed run=%s", run.id, exc_info=True)
 
 
 def _launch_worker(

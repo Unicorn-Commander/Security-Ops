@@ -58,6 +58,7 @@ from app.db.session import get_sessionmaker
 from app.models.audit import AuditAction
 from app.models.finding import Finding, FindingSeverity, FindingStatus
 from app.models.run import Run, RunMode, RunStatus
+from app.models.run_event import RunEventType
 from app.audit.writer import record_event
 from app.repositories.engagements import EngagementRepository
 from app.repositories.findings import FindingRepository
@@ -108,6 +109,12 @@ _SEVERITY_MAP: dict[str, FindingSeverity] = {
 # terminate them (single-worker container; cross-worker stop uses the pid-file
 # fallback below). Multi-worker coordination is Phase 3.
 _RUNNING: dict[uuid.UUID, "asyncio.subprocess.Process"] = {}
+
+# Live-trace (SSE reasoning tail) bounds: a single line is truncated to this many
+# chars, and at most this many lines are emitted per poll-tick, so a chatty scan
+# can't build an unbounded SSE frame or flood the run_events table.
+_TRACE_LINE_MAX = 500
+_TRACE_LINES_PER_TICK = 40
 
 
 # ---------------------------------------------------------------------------
@@ -765,6 +772,17 @@ class StrixRunner:
             invocation.model,
             " ".join(invocation.command),
         )
+        await self._emit(
+            run,
+            RunEventType.RUNNING,
+            f"{run.engine} run started over {len(run.targets or [])} target(s)",
+            {
+                "engine": run.engine,
+                "model": invocation.model,
+                "model_profile": invocation.profile_name,
+                "targets": list(run.targets or []),
+            },
+        )
 
         result = await self._spawn_and_wait(invocation, run=run, timeout=timeout)
 
@@ -885,6 +903,12 @@ class StrixRunner:
             _RUNNING[run.id] = proc
             _write_pid(invocation.pid_path, proc.pid)
             log.info("strix.spawn run=%s pid=%s", run.id, proc.pid)
+            await self._emit(
+                run,
+                RunEventType.ENGINE_SPAWNED,
+                f"engine subprocess spawned (pid {proc.pid})",
+                {"pid": proc.pid, "engine": run.engine, "model": invocation.model},
+            )
 
             poll = getattr(self.settings, "runner_stop_poll_seconds", 0) or 0
             try:
@@ -892,8 +916,10 @@ class StrixRunner:
                     # Sidecar mode: the API's pidfile signal can't reach this
                     # process, so poll the run's DB status and terminate the live
                     # subprocess if an operator stopped it (cross-container E-stop).
+                    # The same poll loop tails the engine log into REASONING events.
                     returncode, stopped, error = await self._wait_with_stop_watch(
-                        proc, run=run, timeout=timeout, poll=poll
+                        proc, run=run, timeout=timeout, poll=poll,
+                        log_path=invocation.log_path,
                     )
                 elif timeout:
                     returncode = await asyncio.wait_for(proc.wait(), timeout=timeout)
@@ -956,8 +982,85 @@ class StrixRunner:
         uses a zero exit code)."""
         return result.metadata.get("strix_status") == "completed"
 
+    # -- live trace (SSE step log) ----------------------------------------
+    async def _emit(
+        self,
+        run: Run,
+        event_type: "RunEventType | str",
+        message: str | None = None,
+        data: dict[str, Any] | None = None,
+    ) -> None:
+        """Best-effort: append one live-trace event for the SSE step log.
+
+        A trace line is an operator convenience, never load-bearing. The emitter
+        writes in its OWN committed, org-bound session, so a row is visible to the
+        stream immediately — independent of this runner's long-lived transaction —
+        and any error is swallowed here so tracing can NEVER disturb a scan. The
+        import is lazy to break the engine<->services cycle (``services.runs``
+        imports this module)."""
+        if run is None or getattr(run, "org_id", None) is None:
+            return
+        try:
+            from app.services.run_events import emit_run_event  # lazy: avoid cycle
+
+            await emit_run_event(
+                run_id=run.id,
+                org_id=run.org_id,
+                event_type=event_type,
+                message=message,
+                data=data,
+            )
+        except Exception:  # noqa: BLE001 - tracing must never break the run
+            log.debug("strix.trace: emit failed run=%s", getattr(run, "id", None), exc_info=True)
+
+    async def _emit_log_lines(self, run: Run, path: "Path | str", pos: int) -> int:
+        """Tail new *complete* lines from the engine log and emit them as REASONING
+        events (batched → one commit per call); return the new byte offset.
+
+        This is what makes the trace show the agent *thinking* in real time for a
+        long scan. Bounded + best-effort: reads only whole lines (a partial tail is
+        left for the next tick), caps line length and lines-per-tick, and never
+        raises. Only reached in poll (sidecar) mode — the inline/test path relies on
+        the lifecycle events, which are emitted regardless of engine chattiness."""
+        try:
+            with open(path, "rb") as fh:
+                fh.seek(pos)
+                chunk = fh.read()
+        except OSError:
+            return pos
+        if not chunk:
+            return pos
+        nl = chunk.rfind(b"\n")
+        if nl == -1:
+            return pos  # no complete line buffered yet — wait for more output
+        complete = chunk[: nl + 1]
+        new_pos = pos + len(complete)
+        lines = [
+            ln.strip()
+            for ln in complete.decode("utf-8", "replace").splitlines()
+            if ln.strip()
+        ]
+        if lines:
+            batch = [
+                (RunEventType.REASONING, ln[:_TRACE_LINE_MAX], None)
+                for ln in lines[:_TRACE_LINES_PER_TICK]
+            ]
+            try:
+                from app.services.run_events import emit_run_events  # lazy: avoid cycle
+
+                await emit_run_events(run_id=run.id, org_id=run.org_id, events=batch)
+            except Exception:  # noqa: BLE001
+                log.debug("strix.trace: tail emit failed run=%s", run.id, exc_info=True)
+        return new_pos
+
     async def _wait_with_stop_watch(
-        self, proc: "asyncio.subprocess.Process", *, run: Run, timeout: float | None, poll: float
+        self,
+        proc: "asyncio.subprocess.Process",
+        *,
+        run: Run,
+        timeout: float | None,
+        poll: float,
+        log_path: "Path | str | None" = None,
     ) -> tuple[int | None, bool, str | None]:
         """Wait for the subprocess while polling the DB for an operator stop.
 
@@ -965,19 +1068,31 @@ class StrixRunner:
         ``poll``-second DB status check lets a cross-container E-stop actually kill a
         live scan (the API flips the run out of RUNNING; this process sees it and
         terminates Strix). ``timeout`` still bounds the total wait.
+
+        When ``log_path`` is given, each tick also tails new engine output into
+        REASONING trace events (best-effort) — so the SSE step log shows the agent
+        thinking in real time. The tail runs on the completing tick too, so trailing
+        output isn't lost.
         """
         wait_task = asyncio.ensure_future(proc.wait())
         elapsed = 0.0
+        pos = 0
         try:
             while True:
                 remaining = None
                 if timeout is not None:
                     remaining = timeout - elapsed
                     if remaining <= 0:
+                        if log_path is not None:
+                            pos = await self._emit_log_lines(run, log_path, pos)
                         await _terminate(proc)
                         return proc.returncode, True, f"strix run timed out after {timeout}s"
                 step = poll if remaining is None else min(poll, remaining)
                 done, _pending = await asyncio.wait({wait_task}, timeout=step)
+                # Stream any new engine output as REASONING events each tick
+                # (including the tick the process exits on — capture the tail).
+                if log_path is not None:
+                    pos = await self._emit_log_lines(run, log_path, pos)
                 if wait_task in done:
                     return wait_task.result(), False, None
                 elapsed += step
@@ -1090,6 +1205,17 @@ class StrixRunner:
                         "cwe": vuln.cwe,
                     },
                 )
+                await self._emit(
+                    run,
+                    RunEventType.FINDING,
+                    f"[{vuln.severity.value}] {vuln.title}",
+                    {
+                        "title": vuln.title,
+                        "severity": vuln.severity.value,
+                        "cwe": vuln.cwe,
+                        "endpoint": vuln.endpoint,
+                    },
+                )
         if created:
             await self.session.flush()
             log.info("strix.findings.stored run=%s count=%d", run.id, len(created))
@@ -1149,6 +1275,26 @@ class StrixRunner:
             status.value,
             findings_count,
             md.get("cost_usd"),
+        )
+        # Final trace event, after the run row is durably terminal. Emitted post-
+        # commit so an SSE stream sees the terminal status first, then closes.
+        _terminal_event = {
+            RunStatus.COMPLETED: RunEventType.COMPLETED,
+            RunStatus.FAILED: RunEventType.FAILED,
+            RunStatus.STOPPED: RunEventType.STOPPED,
+            RunStatus.DENIED: RunEventType.FAILED,
+        }.get(status, RunEventType.COMPLETED)
+        await self._emit(
+            run,
+            _terminal_event,
+            reason or f"run {status.value.lower()} — {findings_count} finding(s)",
+            {
+                "status": status.value,
+                "findings": findings_count,
+                "cost_usd": md.get("cost_usd"),
+                "report_path": report_path,
+                "error": error,
+            },
         )
         return run
 

@@ -13,6 +13,7 @@ from app.models.finding import Finding, FindingSeverity, FindingStatus
 from app.models.organization import Organization
 from app.models.pat import PersonalAccessToken
 from app.models.run import Run, RunMode, RunStatus
+from app.models.run_event import RunEvent, RunEventType
 from app.models.run_queue import RunQueueEntry
 from app.models.target import (
     AttestationMethod,
@@ -38,6 +39,8 @@ __all__ = [
     "Run",
     "RunStatus",
     "RunMode",
+    "RunEvent",
+    "RunEventType",
     "RunQueueEntry",
     # finding
     "Finding",
