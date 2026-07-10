@@ -65,8 +65,7 @@ RUN pip install strix-agent==1.0.4
 # do NOT phone home at runtime (the runner uses `-disable-update-check`).
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl unzip \
-    && NUCLEI_VER=$(curl -fsSL https://api.github.com/repos/projectdiscovery/nuclei/releases/latest \
-         | grep -oP '"tag_name":\s*"v\K[^"]+') \
+    && NUCLEI_VER=3.11.0 \
     && ARCH=$(dpkg --print-architecture) \
     && curl -fsSL -o /tmp/nuclei.zip \
          "https://github.com/projectdiscovery/nuclei/releases/download/v${NUCLEI_VER}/nuclei_${NUCLEI_VER}_linux_${ARCH}.zip" \
@@ -87,8 +86,7 @@ RUN apt-get update \
 # runtime (no phone-home).
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl git \
-    && GITLEAKS_VER=$(curl -fsSL https://api.github.com/repos/gitleaks/gitleaks/releases/latest \
-         | grep -oP '"tag_name":\s*"v\K[^"]+') \
+    && GITLEAKS_VER=8.30.1 \
     && ARCH=$(dpkg --print-architecture) \
     && case "$ARCH" in amd64) GLARCH=x64 ;; arm64) GLARCH=arm64 ;; *) GLARCH="$ARCH" ;; esac \
     && curl -fsSL -o /tmp/gitleaks.tar.gz \
@@ -110,8 +108,7 @@ RUN apt-get update \
 # Docker socket to pull/inspect images — the runner already mounts it for Strix.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl \
-    && TRIVY_VER=$(curl -fsSL https://api.github.com/repos/aquasecurity/trivy/releases/latest \
-         | grep -oP '"tag_name":\s*"v\K[^"]+') \
+    && TRIVY_VER=0.72.0 \
     && ARCH=$(dpkg --print-architecture) \
     && case "$ARCH" in amd64) TVARCH=64bit ;; arm64) TVARCH=ARM64 ;; *) TVARCH="$ARCH" ;; esac \
     && curl -fsSL -o /tmp/trivy.tar.gz \
@@ -124,49 +121,56 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # --- Opengrep engine (SAST, Semgrep-compatible) ---------------------------
-# app/engine/opengrep_runner.py scans REPO targets by cloning them into the run dir
-# and invoking `opengrep scan --json`. Install the standalone Linux release binary
-# for the build arch (latest tag via the GitHub API).
+# app/engine/opengrep_runner.py clones REPO targets and invokes `opengrep scan --json`.
+# Opengrep ships a STANDALONE binary asset (opengrep_manylinux_<arch>) — NOT a
+# versioned zip — so install it directly. Version pinned: reproducible build + no
+# unauthenticated GitHub-API rate-limit dependency. `git` stays (runtime repo clones).
+ARG OPENGREP_VER=1.25.0
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl git unzip \
-    && OPENGREP_VER=$(curl -fsSL https://api.github.com/repos/opengrep/opengrep/releases/latest \
-         | grep -oP '"tag_name":\s*"v\K[^"]+') \
+    && apt-get install -y --no-install-recommends ca-certificates curl git \
     && ARCH=$(dpkg --print-architecture) \
-    && case "$ARCH" in amd64) OGARCH=x86_64 ;; arm64) OGARCH=arm64 ;; *) OGARCH="$ARCH" ;; esac \
-    && curl -fsSL -o /tmp/opengrep.zip \
-         "https://github.com/opengrep/opengrep/releases/download/v${OPENGREP_VER}/opengrep_${OPENGREP_VER}_linux_${OGARCH}.zip" \
-    && unzip -o /tmp/opengrep.zip -d /opt/opengrep \
-    && ln -sf "$(find /opt/opengrep -name opengrep | head -n1)" /usr/local/bin/opengrep \
+    && case "$ARCH" in amd64) OGASSET=opengrep_manylinux_x86 ;; arm64) OGASSET=opengrep_manylinux_aarch64 ;; *) echo "opengrep: unsupported arch $ARCH" && exit 1 ;; esac \
+    && curl -fsSL -o /usr/local/bin/opengrep \
+         "https://github.com/opengrep/opengrep/releases/download/v${OPENGREP_VER}/${OGASSET}" \
     && chmod +x /usr/local/bin/opengrep \
-    && rm -f /tmp/opengrep.zip \
-    && apt-get purge -y --auto-remove curl unzip \
+    && /usr/local/bin/opengrep --version \
+    && apt-get purge -y --auto-remove curl \
     && rm -rf /var/lib/apt/lists/*
 
 # --- OWASP ZAP engine (DAST) ----------------------------------------------
-# app/engine/zap_runner.py runs the baseline scanner one target at a time. This is
-# the heaviest layer: Java runtime + official ZAP cross-platform zip into /opt/zap.
-# TODO: consider a separate zap sidecar image if this layer bloats too much.
+# app/engine/zap_runner.py invokes `zap-baseline.py`. The modern ZAP *Linux* tarball
+# (ZAP_<ver>_Linux.tar.gz) ships ONLY the ZAP core (zap.sh) — the baseline wrapper
+# scripts moved into ZAP's Docker build — so fetch zap-baseline.py + zap_common.py
+# from the zaproxy repo (tag, falling back to main) and the `zapv2` client from pip,
+# and place the scripts beside zap.sh so the baseline imports zap_common and finds
+# the core. Version pinned (reproducible + no API rate-limit). Heaviest layer (JRE).
+ARG ZAP_VER=2.17.0
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl default-jre-headless unzip \
-    && ZAP_VER=$(curl -fsSL https://api.github.com/repos/zaproxy/zaproxy/releases/latest \
-         | grep -oP '"tag_name":\s*"v\K[^"]+') \
-    && curl -fsSL -o /tmp/zap.zip \
-         "https://github.com/zaproxy/zaproxy/releases/download/v${ZAP_VER}/ZAP_${ZAP_VER}_Crossplatform.zip" \
-    && unzip -o /tmp/zap.zip -d /opt/zap \
-    && ln -sf "$(find /opt/zap -name zap-baseline.py | head -n1)" /usr/local/bin/zap-baseline.py \
-    && ln -sf "$(find /opt/zap -name zap.sh | head -n1)" /usr/local/bin/zap.sh \
-    && chmod +x /usr/local/bin/zap-baseline.py /usr/local/bin/zap.sh \
-    && rm -f /tmp/zap.zip \
-    && apt-get purge -y --auto-remove curl unzip \
+    && apt-get install -y --no-install-recommends ca-certificates curl default-jre-headless \
+    && curl -fsSL -o /tmp/zap.tar.gz \
+         "https://github.com/zaproxy/zaproxy/releases/download/v${ZAP_VER}/ZAP_${ZAP_VER}_Linux.tar.gz" \
+    && mkdir -p /opt/zap && tar -xzf /tmp/zap.tar.gz -C /opt/zap && rm -f /tmp/zap.tar.gz \
+    && ZAP_HOME=$(dirname "$(find /opt/zap -name zap.sh | head -n1)") \
+    && for s in zap-baseline.py zap_common.py; do \
+         curl -fsSL -o "$ZAP_HOME/$s" "https://raw.githubusercontent.com/zaproxy/zaproxy/v${ZAP_VER}/docker/$s" \
+         || curl -fsSL -o "$ZAP_HOME/$s" "https://raw.githubusercontent.com/zaproxy/zaproxy/main/docker/$s"; \
+       done \
+    && chmod +x "$ZAP_HOME/zap.sh" "$ZAP_HOME/zap-baseline.py" \
+    && ln -sf "$ZAP_HOME" /opt/zap/current \
+    && ln -sf "$ZAP_HOME/zap.sh" /usr/local/bin/zap.sh \
+    && ln -sf "$ZAP_HOME/zap-baseline.py" /usr/local/bin/zap-baseline.py \
+    && pip install --no-cache-dir zaproxy PyYAML \
+    && apt-get purge -y --auto-remove curl \
     && rm -rf /var/lib/apt/lists/*
+# Stable path to the ZAP core for zap_common.py (survives a ZAP_VER bump via the symlink).
+ENV ZAP_PATH=/opt/zap/current
 
 # --- Naabu engine (port discovery) ----------------------------------------
 # app/engine/naabu_runner.py scans DOMAIN/IP_RANGE targets for open ports. Install
 # the standalone binary, plus libpcap-dev for raw socket/packet dependencies.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl libpcap-dev unzip \
-    && NAABU_VER=$(curl -fsSL https://api.github.com/repos/projectdiscovery/naabu/releases/latest \
-         | grep -oP '"tag_name":\s*"v\K[^"]+') \
+    && NAABU_VER=2.6.1 \
     && ARCH=$(dpkg --print-architecture) \
     && case "$ARCH" in amd64) NAARCH=amd64 ;; arm64) NAARCH=arm64 ;; *) NAARCH="$ARCH" ;; esac \
     && curl -fsSL -o /tmp/naabu.zip \
