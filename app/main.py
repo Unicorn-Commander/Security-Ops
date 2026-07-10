@@ -17,7 +17,7 @@ from app.core.config import settings
 from app.db.session import close_db, get_engine, init_db
 
 APP_TITLE = "Security-Ops API"
-APP_VERSION = "0.1.0"
+APP_VERSION = "0.5.0"
 
 logger = logging.getLogger("secops")
 
