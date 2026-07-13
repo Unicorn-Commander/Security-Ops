@@ -351,6 +351,26 @@ def _unauthorized(message: str) -> AppError:
     return AppError(message, code="unauthorized", status_code=401)
 
 
+def _effective_creds(
+    request: Request,
+    creds: HTTPAuthorizationCredentials | None,
+) -> HTTPAuthorizationCredentials | None:
+    """Prefer the access token oauth2-proxy vouches for.
+
+    oauth2-proxy fronts the browser-SSO surface and forwards the Keycloak ACCESS
+    token (which carries the ``entitlements`` claim and validates via JWKS) in the
+    ``X-Forwarded-Access-Token`` header, while its ``Authorization`` header carries
+    the OIDC ID token — the wrong token for a resource server (it lacks the
+    entitlements claim). Use the access token when present; otherwise fall back to the
+    raw ``Authorization`` bearer, which is how the ``/mcp`` PAT surface and direct
+    agent callers (no proxy in front) authenticate.
+    """
+    xf = request.headers.get("x-forwarded-access-token")
+    if xf and xf.strip():
+        return HTTPAuthorizationCredentials(scheme="Bearer", credentials=xf.strip())
+    return creds
+
+
 async def _resolve_user(
     creds: HTTPAuthorizationCredentials | None,
 ) -> AuthUser | None:
@@ -382,7 +402,7 @@ async def get_current_user(
     Phase 1 does not query it.
     """
     try:
-        user = await _resolve_user(creds)
+        user = await _resolve_user(_effective_creds(request, creds))
     except KeycloakValidationError as exc:
         raise _unauthorized(str(exc)) from exc
     if user is None:
@@ -397,7 +417,7 @@ async def get_current_user_optional(
 ) -> AuthUser | None:
     """Like :func:`get_current_user` but returns None instead of raising."""
     try:
-        return await _resolve_user(creds)
+        return await _resolve_user(_effective_creds(request, creds))
     except KeycloakValidationError:
         return None
 
