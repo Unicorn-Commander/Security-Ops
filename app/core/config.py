@@ -146,6 +146,27 @@ class Settings(BaseSettings):
     # an emergency grant lapses on its own rather than lingering as standing access.
     attestation_break_glass_ttl_days: int = 7
 
+    # --- Campaigns (multi-step autonomous pentest, prototype) ---------------
+    # DISABLED BY DEFAULT. Set to "true" to enable campaign creation and
+    # advancement. Every campaign run is individually gate-checked.
+    campaigns_enabled: bool = False
+
+    # --- Engine domain restrictions --------------------------------------
+    # System-wide default: engine -> [fnmatch glob patterns for allowed domains].
+    # Empty or absent = all domains allowed for that engine.
+    # Example: {"nuclei": ["*.example.com", "*.internal.corp"], "prowler": ["arn:aws:iam::*"]}
+    engine_default_domain_map: dict[str, list[str]] = {}
+
+    # --- Abuse controls --------------------------------------------------
+    # Default per-IP rate limit (requests/minute). None = disabled.
+    rate_limit_default_rpm: int | None = None
+    # Default max concurrent runs per organization. None = unlimited.
+    max_concurrent_runs_per_org: int | None = None
+    # Default max concurrent runs per target. None = unlimited.
+    max_concurrent_runs_per_target: int | None = None
+    # Default maximum run duration in seconds. None = unlimited.
+    max_run_duration_seconds: int | None = None
+
     # --- Global kill-switch (honored by the authz gate) ------------------
     emergency_stop_all: bool = False
 

@@ -22,6 +22,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.base import Base, TimestampMixin, UUIDMixin
 
 if TYPE_CHECKING:  # pragma: no cover
+    from app.models.campaign import Campaign
     from app.models.organization import Organization
     from app.models.run import Run
 
@@ -73,9 +74,13 @@ class Engagement(UUIDMixin, TimestampMixin, Base):
     emergency_stopped: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=sa.false()
     )
+    # Engine domain restrictions (JSONB; engine -> [glob patterns]).
+    # Overrides the org-level and system-domain defaults for this engagement.
+    engine_domain_restrictions: Mapped[dict | None] = mapped_column(_JSONB, nullable=True)
 
     org: Mapped["Organization"] = relationship("Organization", back_populates="engagements")
     runs: Mapped[list["Run"]] = relationship("Run", back_populates="engagement")
+    campaigns: Mapped[list["Campaign"]] = relationship("Campaign", back_populates="engagement")
 
     def __repr__(self) -> str:  # pragma: no cover
         return (
