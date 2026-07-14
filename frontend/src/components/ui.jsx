@@ -46,13 +46,16 @@ const SEV_CLS = { INFO: 'sev--info', LOW: 'sev--low', MEDIUM: 'sev--medium', HIG
 const SEV_RANK = { INFO: 1, LOW: 2, MEDIUM: 3, HIGH: 4, CRITICAL: 5 };
 export function Severity({ value }) {
   const rank = SEV_RANK[value] || 1;
+  const label = titleCase(value);
   return (
-    <span className={`sev ${SEV_CLS[value] || 'sev--info'}`}>
-      <span className="sevbars" aria-hidden="true">
-        {[1, 2, 3, 4, 5].map((i) => <i key={i} className={i <= rank ? 'on' : ''} />)}
+    <Tooltip label={`${label} severity — expected impact if the finding is real.`} place="below">
+      <span className={`sev ${SEV_CLS[value] || 'sev--info'}`} tabIndex={0}>
+        <span className="sevbars" aria-hidden="true">
+          {[1, 2, 3, 4, 5].map((i) => <i key={i} className={i <= rank ? 'on' : ''} />)}
+        </span>
+        {label}
       </span>
-      {titleCase(value)}
-    </span>
+    </Tooltip>
   );
 }
 export const SEV_VAR = { INFO: 'var(--sev-info)', LOW: 'var(--sev-low)', MEDIUM: 'var(--sev-medium)', HIGH: 'var(--sev-high)', CRITICAL: 'var(--sev-critical)' };
@@ -74,9 +77,14 @@ export function Confidence({ value }) {
   if (value == null || value === '') return null;
   const m = CONF_META[String(value).toLowerCase()] || { label: titleCase(String(value)), cls: 'conf--mid' };
   return (
-    <span className={`conf ${m.cls}`} title="How sure the engine is this is real — separate from how severe it is.">
-      <span className="conf__mark" aria-hidden="true" />{m.label}
-    </span>
+    <Tooltip
+      label={`${m.label} — how sure the engine is this is real, separate from severity.`}
+      place="below"
+    >
+      <span className={`conf ${m.cls}`} tabIndex={0}>
+        <span className="conf__mark" aria-hidden="true" />{m.label}
+      </span>
+    </Tooltip>
   );
 }
 
@@ -142,10 +150,18 @@ export function SkeletonRows({ rows = 5, cols = 5 }) {
 }
 
 /* ---- Stat tile ---- */
+const TILE_HELP = {
+  'Active engagements': 'Currently ACTIVE authorization scopes. Only these can authorize new runs.',
+  'Attested targets': 'Registered assets with a valid, unexpired ownership or authorization proof.',
+  Runs: 'Scan executions created after the server-side engagement, scope, and attestation gate passes.',
+  'Open findings': 'Findings that still need triage or remediation; remediated and false-positive items are excluded.',
+};
+
 export function Tile({ label, icon, value, sub, accent, section, children }) {
+  const help = TILE_HELP[label];
   return (
     <div className={`tile ${accent ? 'tile--accent' : ''} ${section ? 'tile--section' : ''}`} data-section={section || undefined}>
-      <div className="tile__label">{icon}{label}</div>
+      <div className="tile__label">{icon}{label}{help && <HelpDot label={help} place="below" />}</div>
       {value != null && <div className="tile__value">{value}</div>}
       {children}
       {sub && <div className="tile__foot">{sub}</div>}
@@ -179,7 +195,9 @@ export function Meter({ segments }) {
   return (
     <div className="meter" role="img" aria-label={`Distribution: ${label}`}>
       {segments.filter((s) => s.value > 0).map((s) => (
-        <span key={s.label} title={`${s.label}: ${s.value}`} style={{ width: `${(s.value / total) * 100}%`, background: s.color }} />
+        <Tooltip key={s.label} label={`${s.label}: ${s.value}`} place="below" style={{ width: `${(s.value / total) * 100}%` }}>
+          <span tabIndex={0} aria-label={`${s.label}: ${s.value}`} style={{ width: '100%', background: s.color }} />
+        </Tooltip>
       ))}
     </div>
   );
@@ -358,7 +376,7 @@ export function ConfirmProvider({ children }) {
 /* ---- Tooltip (hover + keyboard-focus; accessible via aria-describedby) ----
  * Wrap any focusable trigger: <Tooltip label="…"><button/></Tooltip>. Purely
  * CSS-driven show/hide (see .tt in components.css); `place` = top|right|below. */
-export function Tooltip({ label, sub, place = 'top', className = '', children }) {
+export function Tooltip({ label, sub, place = 'top', className = '', style, children }) {
   const id = React.useId();
   if (label == null || label === '') return children;
   const cls = `tt ${place === 'right' ? 'tt--right' : place === 'below' ? 'tt--below' : ''} ${className}`.trim();
@@ -366,7 +384,7 @@ export function Tooltip({ label, sub, place = 'top', className = '', children })
     ? React.cloneElement(children, { 'aria-describedby': id })
     : children;
   return (
-    <span className={cls}>
+    <span className={cls} style={style}>
       {child}
       <span className="tt__pop" role="tooltip" id={id}>{label}{sub && <small>{sub}</small>}</span>
     </span>
@@ -382,14 +400,42 @@ export function HelpDot({ label, sub, place = 'top' }) {
   );
 }
 
+const PAGE_HELP = {
+  Engagements: {
+    label: 'Authorized engagement scopes',
+    sub: 'A scan requires an ACTIVE, unexpired engagement whose target is in scope and attested.',
+  },
+  'Authorized targets': {
+    label: 'Attested target registry',
+    sub: 'Targets remain unscannable until the server verifies valid proof and an active engagement covers them.',
+  },
+  Runs: {
+    label: 'Authorized scan ledger',
+    sub: 'Every run is gate-checked before creation and then dispatched to an isolated engine runner.',
+  },
+  Findings: {
+    label: 'Finding triage inbox',
+    sub: 'Severity describes impact; confidence describes how sure the engine is; VERIFIED means the finding was re-checked.',
+  },
+  'Attack path': {
+    label: 'Exposure graph',
+    sub: 'A derived view of engagements, affected hosts, and findings. It does not create or authorize scans.',
+  },
+  Settings: {
+    label: 'Console settings',
+    sub: 'Appearance, account access, agent tokens, and developer-only options for this workspace.',
+  },
+};
+
 /* ---- Page header (section-aware: optional hue icon chip + eyebrow) ---- */
 export function PageHead({ title, icon, eyebrow, badge, subtitle, actions }) {
+  const help = PAGE_HELP[title];
   return (
     <div className="page__head">
       {icon && <div className="page__ic">{icon}</div>}
       <div className="page__head-main">
         {eyebrow && <div className="page__eyebrow">{eyebrow}</div>}
-        <div className="page__title"><h1 className="display" style={{ fontSize: 24 }}>{title}</h1>{badge}</div>
+        <div className="page__title"><h1 className="display" style={{ fontSize: 24 }}>{title}</h1>{help && <HelpDot label={help.label} sub={help.sub} place="below" />}{badge}</div>
         {subtitle && <p className="page__sub">{subtitle}</p>}
       </div>
       {actions && <div className="page__actions">{actions}</div>}
