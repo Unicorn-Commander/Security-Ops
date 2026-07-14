@@ -32,20 +32,6 @@ _POLICY = "org_isolation"
 
 
 def upgrade() -> None:
-    # -- campaign_status enum -------------------------------------------------
-    op.execute("CREATE TYPE campaign_status AS ENUM ("
-        "'DRAFT', 'ACTIVE', 'IN_PROGRESS', 'WAITING_APPROVAL', "
-        "'COMPLETED', 'FAILED', 'STOPPED', 'EXPIRED', 'CANCELLED')")
-
-    # -- campaign_phase enum --------------------------------------------------
-    op.execute("CREATE TYPE campaign_phase AS ENUM ("
-        "'RECON', 'EXPLOIT', 'PRIVILEGE_ESCALATION', "
-        "'LATERAL_MOVEMENT', 'PERSISTENCE', 'REPORTING')")
-
-    # -- campaign_run_status enum ---------------------------------------------
-    op.execute("CREATE TYPE campaign_run_status AS ENUM ("
-        "'PENDING', 'IN_PROGRESS', 'COMPLETED', 'FAILED', 'SKIPPED')")
-
     # -- campaigns table ------------------------------------------------------
     op.create_table(
         "campaigns",
@@ -54,14 +40,20 @@ def upgrade() -> None:
         sa.Column("org_id", sa.Uuid(), nullable=False),
         sa.Column("name", sa.String(length=256), nullable=False),
         sa.Column("description", sa.Text(), nullable=True),
-        sa.Column("status", sa.Enum("campaign_status", name="campaign_status"), nullable=False,
-                  server_default="DRAFT"),
-        sa.Column("current_phase", sa.Enum("campaign_phase", name="campaign_phase"), nullable=False,
-                  server_default="RECON"),
+        sa.Column("status",
+                  sa.Enum("DRAFT", "ACTIVE", "IN_PROGRESS", "WAITING_APPROVAL",
+                          "COMPLETED", "FAILED", "STOPPED", "EXPIRED", "CANCELLED",
+                          name="campaign_status"),
+                  nullable=False, server_default="DRAFT"),
+        sa.Column("current_phase",
+                  sa.Enum("RECON", "EXPLOIT", "PRIVILEGE_ESCALATION",
+                          "LATERAL_MOVEMENT", "PERSISTENCE", "REPORTING",
+                          name="campaign_phase"),
+                  nullable=False, server_default="RECON"),
         sa.Column("max_runs", sa.Integer(), nullable=False, server_default="50"),
         sa.Column("max_total_cost_usd", sa.Numeric(14, 6), nullable=False, server_default="500.00"),
         sa.Column("max_duration_hours", sa.Integer(), nullable=False, server_default="72"),
-        sa.Column("approval_required_phases", _JSONB, nullable=False, server_default="'[]'::jsonb"),
+        sa.Column("approval_required_phases", _JSONB, nullable=False, server_default=sa.text("'[]'::jsonb")),
         sa.Column("budget_warning_pct", sa.Integer(), nullable=False, server_default="80"),
         sa.Column("total_runs_launched", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("total_cost_usd", sa.Numeric(14, 6), nullable=False, server_default="0.00"),
@@ -69,10 +61,10 @@ def upgrade() -> None:
         sa.Column("started_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("ended_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("error", sa.Text(), nullable=True),
-        sa.Column("phase_state", _JSONB, nullable=False, server_default="'{}'::jsonb"),
+        sa.Column("phase_state", _JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")),
         sa.Column("resumed_by", sa.Text(), nullable=True),
         sa.Column("resumed_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("phase_engines", _JSONB, nullable=False, server_default="'{}'::jsonb"),
+        sa.Column("phase_engines", _JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
@@ -100,9 +92,15 @@ def upgrade() -> None:
         sa.Column("campaign_id", sa.Uuid(), nullable=False),
         sa.Column("run_id", sa.Uuid(), nullable=True),
         sa.Column("org_id", sa.Uuid(), nullable=False),
-        sa.Column("phase", sa.Enum("campaign_phase", name="campaign_phase"), nullable=False),
-        sa.Column("status", sa.Enum("campaign_run_status", name="campaign_run_status"), nullable=False,
-                  server_default="PENDING"),
+        sa.Column("phase",
+                  sa.Enum("RECON", "EXPLOIT", "PRIVILEGE_ESCALATION",
+                          "LATERAL_MOVEMENT", "PERSISTENCE", "REPORTING",
+                          name="campaign_phase"),
+                  nullable=False),
+        sa.Column("status",
+                  sa.Enum("PENDING", "IN_PROGRESS", "COMPLETED", "FAILED", "SKIPPED",
+                          name="campaign_run_status"),
+                  nullable=False, server_default="PENDING"),
         sa.Column("engine", sa.String(length=32), nullable=False),
         sa.Column("targets", _JSONB, nullable=False),
         sa.Column("rationale", sa.Text(), nullable=True),
