@@ -17,12 +17,14 @@ imports authz / services / api.
 from __future__ import annotations
 
 from app.repositories.engagements import EngagementRepository
+from app.repositories.audit import AuditRepository
 from app.repositories.findings import FindingRepository
 from app.repositories.runs import RunRepository
 from app.repositories.targets import TargetRepository
 
 __all__ = [
     "EngagementRepository",
+    "AuditRepository",
     "TargetRepository",
     "FindingRepository",
     "RunRepository",

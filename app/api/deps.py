@@ -69,9 +69,10 @@ async def get_current_org(user: EntitledUser, session: DbSession) -> Organizatio
     """Resolve the caller's tenant :class:`Organization` from their SSO principal.
 
     Depends on :data:`EntitledUser`, so reaching this code already proves the
-    caller passed SSO *and* the entitlement gate. The principal's ``org_slug``
-    (from a Keycloak group/attribute — see :func:`app.auth.sso._derive_org_slug`)
-    is matched against :attr:`Organization.slug`.
+    caller passed SSO *and* the entitlement gate. The principal's tenant key
+    (``org_slug`` from :func:`app.auth.sso._derive_org_slug`, which may carry a
+    human slug or a workspace claim) is matched against :attr:`Organization.slug`
+    first and then :attr:`Organization.keycloak_group`.
 
     Fail-closed 403s (never a 404 — the caller is authenticated, the problem is
     that they have no usable tenant here):
@@ -101,6 +102,12 @@ async def get_current_org(user: EntitledUser, session: DbSession) -> Organizatio
     org = (
         await session.execute(select(Organization).where(Organization.slug == slug))
     ).scalar_one_or_none()
+    if org is None:
+        org = (
+            await session.execute(
+                select(Organization).where(Organization.keycloak_group == slug)
+            )
+        ).scalar_one_or_none()
     if org is None:
         raise ForbiddenError(
             f"organization {slug!r} is not provisioned in Security-Ops",

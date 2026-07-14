@@ -28,6 +28,8 @@ from fastapi import APIRouter
 
 from app.api.assistant import router as assistant_router
 from app.api.attack_path import router as attack_path_router
+from app.api.campaigns import router as campaigns_router
+from app.api.compliance import router as compliance_router
 from app.api.engagements import router as engagements_router
 from app.api.findings import router as findings_router
 from app.api.me import router as me_router
@@ -43,7 +45,9 @@ api_router.include_router(attack_path_router)
 api_router.include_router(targets_router)
 api_router.include_router(runs_router)
 api_router.include_router(findings_router)
+api_router.include_router(campaigns_router)
 api_router.include_router(overview_router)
+api_router.include_router(compliance_router)
 api_router.include_router(pats_router)
 api_router.include_router(assistant_router)
 api_router.include_router(me_router)

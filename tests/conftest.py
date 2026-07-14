@@ -90,8 +90,18 @@ async def db_session() -> AsyncSession:
 # ---------------------------------------------------------------------------
 # Builders — construct valid, gate-relevant rows with sensible defaults.
 # ---------------------------------------------------------------------------
-async def make_org(session: AsyncSession, *, slug: str = "pilot") -> Organization:
-    org = Organization(id=uuid.uuid4(), slug=slug, name=f"{slug} org")
+async def make_org(
+    session: AsyncSession,
+    *,
+    slug: str = "pilot",
+    keycloak_group: str | None = None,
+) -> Organization:
+    org = Organization(
+        id=uuid.uuid4(),
+        slug=slug,
+        name=f"{slug} org",
+        keycloak_group=keycloak_group,
+    )
     session.add(org)
     await session.flush()
     return org

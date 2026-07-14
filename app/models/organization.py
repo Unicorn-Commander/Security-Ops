@@ -21,14 +21,18 @@ if TYPE_CHECKING:  # pragma: no cover - typing only, resolved via the mapper reg
 
 
 class Organization(UUIDMixin, TimestampMixin, Base):
-    """A customer tenant. ``slug`` is the stable external identifier used to map
-    an SSO principal (via ``org_slug`` / a realm attribute) onto its org."""
+    """A customer tenant.
+
+    ``slug`` remains the stable human-readable identifier. ``keycloak_group`` can
+    hold the external workspace/group claim emitted by Keycloak when a tenant is
+    provisioned by claim instead of by slug.
+    """
 
     __tablename__ = "organizations"
 
     slug: Mapped[str] = mapped_column(String(255), nullable=False, unique=True, index=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
-    # Optional Keycloak group this org maps to (suite convention); nullable in Phase 1.
+    # Optional Keycloak group/workspace claim this org maps to.
     keycloak_group: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     targets: Mapped[list["AuthorizedTarget"]] = relationship(
