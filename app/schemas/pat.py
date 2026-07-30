@@ -16,13 +16,27 @@ class PATCreate(BaseModel):
     """Mint a new agent key for the current operator.
 
     ``scopes`` defaults to empty: the mint route fills it with the operator's own
-    entitlement SKUs so the key inherits (never exceeds) the minter's access.
-    ``owner``/``org`` come from the SSO principal, not the body.
+    entitlement SKUs so the key inherits (never exceeds) the minter's access. A
+    non-empty list may only NARROW that set — anything the caller is not entitled to
+    is refused (``pat_scopes_exceed_caller``). ``owner``/``org`` come from the SSO
+    principal, not the body.
+
+    ``expires_at`` is optional but no longer unbounded (BREAKING vs. the original
+    shape, where ``null`` meant "never"): omitting it mints a key that lapses in
+    ``pat_default_ttl_days``, and any instant past ``pat_max_ttl_days`` is refused
+    (``pat_expiry_too_long``). A PAT's authority is frozen at mint time, so it has to
+    lapse on its own. Existing NULL-expiry keys still verify — the bound is mint-side.
     """
 
     name: str = Field(min_length=1, max_length=255)
     scopes: list[str] = Field(default_factory=list)
-    expires_at: datetime | None = None
+    expires_at: datetime | None = Field(
+        default=None,
+        description=(
+            "When the key stops working. Omit for the default lifetime; "
+            "'never' is not mintable and an over-long expiry is refused."
+        ),
+    )
 
 
 class PATRead(BaseModel):

@@ -13,6 +13,14 @@ Secret handling (never log or store the plaintext):
 * :func:`verify_pat` hashes a presented token and looks the row up by digest,
   rejecting revoked/expired keys, and stamps ``last_used_at`` on success.
 
+Lifetime (mint-side only): a PAT's authority is FROZEN at mint time — the MCP auth
+path rebuilds the principal from the stored row and never re-checks live
+entitlement — so :func:`create_pat` ALWAYS time-boxes a new key
+(``pat_default_ttl_days`` when the request omits an expiry, ``pat_max_ttl_days`` as
+the hard ceiling). A never-expiring key is no longer mintable. :func:`verify_pat` is
+deliberately UNCHANGED: rows already issued with a NULL expiry stay valid until they
+are revoked, because there are live ones in production.
+
 Transaction contract (suite convention): these helpers **flush, never commit** —
 the caller (the mint route / the MCP auth scope) owns the transaction boundary,
 exactly like the repositories and the audit writer.
@@ -28,11 +36,12 @@ import logging
 import secrets
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.errors import ValidationAppError
 from app.models.pat import PersonalAccessToken
 
@@ -49,6 +58,7 @@ _SECRET_BYTES = 32
 __all__ = [
     "TOKEN_PREFIX",
     "MintedPAT",
+    "bounded_expiry",
     "hash_token",
     "is_pat_token",
     "generate_token",
@@ -80,6 +90,44 @@ def _aware(dt: datetime | None) -> datetime | None:
     if dt is None:
         return None
     return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
+
+
+def bounded_expiry(expires_at: datetime | None) -> datetime:
+    """Return the expiry a NEW key must carry, or raise if the request is unusable.
+
+    Mint-side lifetime policy, in one place:
+
+    * ``None`` (omitted / explicit ``null``) => ``now + pat_default_ttl_days``. A
+      never-expiring agent key is not mintable — the console's old "No expiry"
+      choice resolves to the default lifetime instead of a permanent credential.
+    * a supplied instant in the past (or now) => refused, as before.
+    * a supplied instant beyond ``now + pat_max_ttl_days`` => refused. Without a
+      ceiling ``expires_at`` = year 3000 was simply "no expiry" spelled differently.
+
+    A supplied, in-bounds value is returned unchanged so an explicit expiry is
+    persisted exactly as the caller asked for it. Naive datetimes are read as UTC
+    for the comparison only. This is NOT applied on the verify path: existing rows
+    (including NULL-expiry ones minted before this bound existed) are untouched.
+    """
+    now = _utcnow()
+    if expires_at is None:
+        return now + timedelta(days=settings.pat_default_ttl_days)
+
+    requested = _aware(expires_at) or now
+    if requested <= now:
+        raise ValidationAppError(
+            "personal access token expiry must be in the future",
+            code="pat_expiry_invalid",
+            detail={"field": "expires_at"},
+        )
+    max_days = settings.pat_max_ttl_days
+    if requested > now + timedelta(days=max_days):
+        raise ValidationAppError(
+            f"personal access token expiry must be within {max_days} days",
+            code="pat_expiry_too_long",
+            detail={"field": "expires_at", "max_ttl_days": max_days},
+        )
+    return expires_at
 
 
 def is_pat_token(token: str | None) -> bool:
@@ -118,7 +166,9 @@ async def create_pat(
     on the returned :class:`MintedPAT` and nowhere else. ``org_slug`` binds the key
     to the minting operator's tenant and ``scopes`` are the entitlement SKUs the
     resolved principal will carry (so the entitlement gate still applies to the
-    agent). A supplied ``expires_at`` must be in the future. Flushes; the caller
+    agent). The key is ALWAYS time-boxed: ``expires_at`` must be in the future and
+    within ``pat_max_ttl_days``; omitting it yields ``pat_default_ttl_days`` rather
+    than a permanent credential (see :func:`bounded_expiry`). Flushes; the caller
     owns the commit.
 
     ``org_slug`` / ``owner_email`` are keyword-only additions to the documented
@@ -132,12 +182,8 @@ async def create_pat(
             code="pat_name_required",
             detail={"field": "name"},
         )
-    if expires_at is not None and (_aware(expires_at) or _utcnow()) <= _utcnow():
-        raise ValidationAppError(
-            "personal access token expiry must be in the future",
-            code="pat_expiry_invalid",
-            detail={"field": "expires_at"},
-        )
+    # Always time-boxed: refuses a past/over-long expiry, defaults an omitted one.
+    expires_at = bounded_expiry(expires_at)
 
     plaintext, prefix = generate_token()
     record = PersonalAccessToken(

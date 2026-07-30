@@ -161,10 +161,13 @@ function AccountSection() {
 }
 
 /* -------------------------------------------------- Agent access (PATs) */
+// Every option is BOUNDED — a PAT's authority is frozen at mint time, so a
+// never-expiring agent key is not offered here and the API refuses to mint one.
+// 90 days is the default selection (index 0) and matches the server's
+// pat_default_ttl_days; 1 year is the server's pat_max_ttl_days ceiling.
 const EXPIRY_OPTS = [
-  { label: 'No expiry', days: null },
-  { label: '30 days', days: 30 },
   { label: '90 days', days: 90 },
+  { label: '30 days', days: 30 },
   { label: '1 year', days: 365 },
 ];
 
@@ -186,7 +189,7 @@ function NewTokenDrawer({ onClose, onDone }) {
     e.preventDefault();
     if (!name.trim() || created) return;
     const days = EXPIRY_OPTS[expiryIdx].days;
-    const expires_at = days != null ? new Date(Date.now() + days * 86400000).toISOString() : null;
+    const expires_at = new Date(Date.now() + days * 86400000).toISOString();
     try {
       const res = await run('/pats', { method: 'POST', body: { name: name.trim(), expires_at } });
       setCreated(res);
@@ -240,7 +243,7 @@ function NewTokenDrawer({ onClose, onDone }) {
               <select className="select" value={expiryIdx} onChange={(e) => setExpiryIdx(Number(e.target.value))}>
                 {EXPIRY_OPTS.map((o, i) => <option key={o.label} value={i}>{o.label}</option>)}
               </select>
-              <span className="hint">Expired tokens are rejected automatically. Leave as “No expiry” for long-lived agents.</span>
+              <span className="hint">Expired tokens are rejected automatically. Every token expires — a long-lived agent re-mints one when this lapses.</span>
             </div>
           </form>
         </>

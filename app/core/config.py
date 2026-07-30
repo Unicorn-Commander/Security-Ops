@@ -99,6 +99,18 @@ class Settings(BaseSettings):
     brigade_base_url: str | None = None
     brigade_api_key: str | None = None
 
+    # --- Personal Access Tokens (durable agent credentials) ---------------
+    # A PAT's authority is FROZEN at mint time: app/mcp/auth.py rebuilds the
+    # principal purely from the stored row and never re-checks live entitlement or
+    # org membership. A never-expiring key would therefore keep the security-ops
+    # entitlement after the minting operator loses it or leaves the org, so mint
+    # ALWAYS time-boxes: an omitted expiry becomes now + pat_default_ttl_days and
+    # anything beyond pat_max_ttl_days is refused. MINT-SIDE ONLY — verification is
+    # unchanged and keys already issued with a NULL expiry keep working until they
+    # are revoked (see app.security.pat.verify_pat).
+    pat_default_ttl_days: int = 90
+    pat_max_ttl_days: int = 365
+
     # --- External-target attestation (spec §4) ---------------------------
     # DNS-TXT record name prefix + the token key the operator must publish/serve.
     attestation_dns_txt_name: str = "_security-ops-authz"
