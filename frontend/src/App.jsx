@@ -1,5 +1,5 @@
 import React from 'react';
-import { Routes, Route, Navigate, useLocation, Link } from 'react-router-dom';
+import { Routes, Route, useLocation, Link } from 'react-router-dom';
 import { Sidebar, Topbar } from './components/Shell.jsx';
 import { ToastProvider, ConfirmProvider, EmptyState } from './components/ui.jsx';
 import { SearchIcon, GridIcon } from './components/icons.jsx';
@@ -15,6 +15,7 @@ import Settings from './features/settings';
 import AssistantDock from './features/assistant';
 import OnboardingFlow, { useOnboardingState } from './features/onboarding';
 import { useKeyboardShortcuts } from './lib/shortcuts.js';
+import Landing from './pages/Landing.jsx';
 
 function NotFound() {
   return (
@@ -32,6 +33,12 @@ function NotFound() {
 }
 
 export default function App() {
+  const loc = useLocation();
+  if (loc.pathname === '/') return <Landing />;
+  return <ConsoleApp />;
+}
+
+function ConsoleApp() {
   const [menuOpen, setMenuOpen] = React.useState(false);
   const loc = useLocation();
   React.useEffect(() => { setMenuOpen(false); }, [loc.pathname]);
@@ -48,7 +55,6 @@ export default function App() {
           <Topbar onMenu={() => setMenuOpen((o) => !o)} />
           <main>
             <Routes>
-              <Route path="/" element={<Navigate to="/overview" replace />} />
               <Route path="/overview" element={<Overview />} />
               <Route path="/engagements" element={<Engagements />} />
               <Route path="/targets" element={<Targets />} />
