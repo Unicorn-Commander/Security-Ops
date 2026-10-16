@@ -22,7 +22,11 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from app.core.time import BUSINESS_TIMEZONE, normalize_datetime_to_utc
+from app.core.time import (
+    BUSINESS_TIMEZONE,
+    normalize_datetime_to_utc,
+    normalize_stored_datetime_to_utc,
+)
 from app.models.engagement import EngagementStatus
 from app.models.target import TargetKind
 
@@ -47,12 +51,13 @@ class ScopeRule(BaseModel):
 
 
 class RulesOfEngagement(BaseModel):
-    """Constraints on how a scan may run (spec §4).
+    """Stored constraints on how a scan may run (spec §4).
 
     EVERY field is optional: the gate does ``RulesOfEngagement.model_validate({})``
     on a possibly-empty JSONB column and reads ``time_window_start`` /
     ``time_window_end`` back, so this must validate an empty dict cleanly and never
-    reject well-formed stored data.
+    reject well-formed stored data. A legacy offset-less stored value is UTC, not
+    business time; client request bodies use ``RulesOfEngagementInput`` below.
     """
 
     model_config = ConfigDict(from_attributes=True)
@@ -67,6 +72,28 @@ class RulesOfEngagement(BaseModel):
     @classmethod
     def _normalize_time_window(cls, value: Any) -> Any:
         """Keep stored RoE boundaries as aware UTC, including legacy rows."""
+        return normalize_stored_datetime_to_utc(value)
+
+
+class RulesOfEngagementInput(BaseModel):
+    """Client request version of :class:`RulesOfEngagement`.
+
+    Offset-less request values are business wall-clock time. The outer
+    ``EngagementCreate`` validator also normalizes the nested mapping so one
+    warning covers all naïve datetimes in a request.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    intensity: str | None = None
+    allowed_vuln_classes: list[str] = Field(default_factory=list)
+    time_window_start: datetime | None = None
+    time_window_end: datetime | None = None
+    max_concurrency: int | None = None
+
+    @field_validator("time_window_start", "time_window_end", mode="before")
+    @classmethod
+    def _normalize_time_window(cls, value: Any) -> Any:
         return normalize_datetime_to_utc(value)
 
 
@@ -89,6 +116,14 @@ class EngagementScope(ScopeSelection):
     rules_of_engagement: RulesOfEngagement = Field(default_factory=RulesOfEngagement)
 
 
+class EngagementScopeInput(ScopeSelection):
+    """Client request version of :class:`EngagementScope`."""
+
+    rules_of_engagement: RulesOfEngagementInput = Field(
+        default_factory=RulesOfEngagementInput
+    )
+
+
 class EngagementCreate(BaseModel):
     """Request body for ``POST /engagements`` — a DRAFT engagement + its scope.
 
@@ -99,7 +134,7 @@ class EngagementCreate(BaseModel):
     model_config = ConfigDict(protected_namespaces=())
 
     name: str = Field(min_length=1, max_length=512)
-    scope: EngagementScope
+    scope: EngagementScopeInput
     model_profile: str = Field(default=DEFAULT_MODEL_PROFILE, max_length=255)
     starts_at: datetime | None = None
     expires_at: datetime | None = None
@@ -114,11 +149,13 @@ class EngagementCreate(BaseModel):
         data = dict(value)
         warned = False
 
-        def warn_once() -> None:
+        def warn_once(value: datetime) -> None:
             nonlocal warned
             if not warned:
                 _time_logger.warning(
-                    "naive client datetime interpreted as %s business time and normalized to UTC",
+                    "naive client datetime %s interpreted as %s business time using "
+                    "fold=0 (first occurrence) and normalized to UTC",
+                    value.isoformat(),
                     BUSINESS_TIMEZONE,
                 )
                 warned = True

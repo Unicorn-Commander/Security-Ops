@@ -57,11 +57,13 @@ class AttestationRequest(BaseModel):
         data = dict(value)
         warned = False
 
-        def warn_once() -> None:
+        def warn_once(value: datetime) -> None:
             nonlocal warned
             if not warned:
                 _time_logger.warning(
-                    "naive client datetime interpreted as %s business time and normalized to UTC",
+                    "naive client datetime %s interpreted as %s business time using "
+                    "fold=0 (first occurrence) and normalized to UTC",
+                    value.isoformat(),
                     BUSINESS_TIMEZONE,
                 )
                 warned = True

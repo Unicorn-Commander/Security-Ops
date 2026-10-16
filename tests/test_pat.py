@@ -17,7 +17,7 @@ The load-bearing guarantees under test:
 from __future__ import annotations
 
 import uuid
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -43,6 +43,16 @@ def _agent_user(org_slug: str = "pilot") -> AuthUser:
         org_slug=org_slug,
         apps=["security-ops"],
     )
+
+
+def test_pat_create_naive_expiry_is_business_time():
+    from app.schemas.pat import PATCreate
+
+    request = PATCreate.model_validate(
+        {"name": "local-expiry", "expires_at": "2026-10-16T23:30:00"}
+    )
+
+    assert request.expires_at == datetime(2026, 10, 17, 3, 30, tzinfo=UTC)
 
 
 async def test_create_pat_returns_plaintext_once_and_stores_only_hash(db_session):

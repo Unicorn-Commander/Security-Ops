@@ -9,7 +9,9 @@ plaintext token — returned exactly once, at creation, and never again.
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from app.core.time import normalize_datetime_to_utc
 
 
 class PATCreate(BaseModel):
@@ -37,6 +39,12 @@ class PATCreate(BaseModel):
             "'never' is not mintable and an over-long expiry is refused."
         ),
     )
+
+    @field_validator("expires_at", mode="before")
+    @classmethod
+    def _normalize_expiry(cls, value: object) -> object:
+        """Apply the client request convention before mint-side bounds checks."""
+        return normalize_datetime_to_utc(value)
 
 
 class PATRead(BaseModel):
