@@ -83,10 +83,15 @@ def _utcnow() -> datetime:
 
 
 def _aware(dt: datetime | None) -> datetime | None:
-    """Coerce a possibly-naive timestamp to timezone-aware UTC for safe compares."""
+    """Normalize a persisted or internal timestamp to aware UTC (naive = UTC).
+
+    Client input is converted at the API schema boundary (app.core.time), where a
+    naive value means business time. Values read back from storage or built
+    internally are UTC.
+    """
     if dt is None:
         return None
-    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt.astimezone(timezone.utc)
 
 
 # ---------------------------------------------------------------------------
@@ -187,6 +192,7 @@ async def attest_target(
             code="attestation_method_disabled",
             detail={"method": method.value, "enable_with": "attestation_allow_cloud_role"},
         )
+    expires_at = _aware(expires_at)
     _enforce_minimums(
         method, checkbox_ack, typed_confirmation, justification, evidence, expires_at
     )

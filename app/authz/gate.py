@@ -86,12 +86,15 @@ def _utcnow() -> datetime:
 
 
 def _aware(dt: datetime | None) -> datetime | None:
-    """Coerce a possibly-naive timestamp to timezone-aware UTC for safe compares."""
+    """Normalize a persisted or internal timestamp to aware UTC (naive = UTC).
+
+    Client input is converted at the API schema boundary (app.core.time), where a
+    naive value means business time. Values read back from storage or built
+    internally are UTC.
+    """
     if dt is None:
         return None
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
-    return dt
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt.astimezone(timezone.utc)
 
 
 def _decision(

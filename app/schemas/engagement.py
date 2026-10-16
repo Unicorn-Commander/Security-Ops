@@ -15,15 +15,19 @@ GOTCHA: any field named ``model_profile`` collides with Pydantic's protected
 ``ConfigDict(protected_namespaces=())``.
 """
 
+import logging
 import uuid
 from datetime import datetime
+from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.core.time import BUSINESS_TIMEZONE, normalize_datetime_to_utc
 from app.models.engagement import EngagementStatus
 from app.models.target import TargetKind
 
 DEFAULT_MODEL_PROFILE = "hybrid-local-sweep-verify"
+_time_logger = logging.getLogger("secops.schemas.time")
 
 
 class ScopeRule(BaseModel):
@@ -59,6 +63,12 @@ class RulesOfEngagement(BaseModel):
     time_window_end: datetime | None = None
     max_concurrency: int | None = None
 
+    @field_validator("time_window_start", "time_window_end", mode="before")
+    @classmethod
+    def _normalize_time_window(cls, value: Any) -> Any:
+        """Keep stored RoE boundaries as aware UTC, including legacy rows."""
+        return normalize_datetime_to_utc(value)
+
 
 class ScopeSelection(BaseModel):
     """The ``{in_scope, exclusions}`` half persisted in the engagement ``scope`` column."""
@@ -93,6 +103,51 @@ class EngagementCreate(BaseModel):
     model_profile: str = Field(default=DEFAULT_MODEL_PROFILE, max_length=255)
     starts_at: datetime | None = None
     expires_at: datetime | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_request_datetimes(cls, value: Any) -> Any:
+        """Normalize every client datetime and warn once for this request."""
+        if not isinstance(value, dict):
+            return value
+
+        data = dict(value)
+        warned = False
+
+        def warn_once() -> None:
+            nonlocal warned
+            if not warned:
+                _time_logger.warning(
+                    "naive client datetime interpreted as %s business time and normalized to UTC",
+                    BUSINESS_TIMEZONE,
+                )
+                warned = True
+
+        for field_name in ("starts_at", "expires_at"):
+            if field_name in data:
+                data[field_name] = normalize_datetime_to_utc(
+                    data[field_name], on_naive=warn_once
+                )
+
+        scope = data.get("scope")
+        if isinstance(scope, dict):
+            scope = dict(scope)
+            roe = scope.get("rules_of_engagement")
+            if isinstance(roe, dict):
+                roe = dict(roe)
+                for field_name in ("time_window_start", "time_window_end"):
+                    if field_name in roe:
+                        roe[field_name] = normalize_datetime_to_utc(
+                            roe[field_name], on_naive=warn_once
+                        )
+                scope["rules_of_engagement"] = roe
+            data["scope"] = scope
+        return data
+
+    @field_validator("starts_at", "expires_at", mode="before")
+    @classmethod
+    def _normalize_lifecycle_datetime(cls, value: Any) -> Any:
+        return normalize_datetime_to_utc(value)
 
 
 class EngagementRead(BaseModel):
