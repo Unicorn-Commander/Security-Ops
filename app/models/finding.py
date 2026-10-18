@@ -19,6 +19,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.base import Base, TimestampMixin, UUIDMixin
 
 if TYPE_CHECKING:  # pragma: no cover
+    from app.models.remediation import FindingRemediation
     from app.models.run import Run
 
 _JSONB = JSON().with_variant(JSONB(), "postgresql")
@@ -82,6 +83,9 @@ class Finding(UUIDMixin, TimestampMixin, Base):
     closed_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
 
     run: Mapped["Run"] = relationship("Run", back_populates="findings")
+    remediation: Mapped["FindingRemediation | None"] = relationship(
+        "FindingRemediation", back_populates="finding", uselist=False
+    )
 
     def __repr__(self) -> str:  # pragma: no cover
         return (
