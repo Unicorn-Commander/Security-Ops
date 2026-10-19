@@ -13,6 +13,18 @@ minted key inherits the operator's tenant (``org_slug``) and — unless the requ
 narrows them — the operator's entitlement SKUs as its ``scopes``, so an agent can
 never exceed the person who created it. The plaintext token is surfaced exactly
 once, in the creation response; only its hash is stored (see :mod:`app.security.pat`).
+
+Mint contract (BREAKING change vs. the original shape — see ``PATCreate``):
+
+* every new key is TIME-BOXED. ``expires_at`` may be omitted (it becomes
+  ``pat_default_ttl_days`` out) but it can no longer be "never": a value beyond
+  ``pat_max_ttl_days`` is refused with ``pat_expiry_too_long``.
+* a body-supplied ``scopes`` list must be a SUBSET of the caller's own entitlements
+  (``pat_scopes_exceed_caller``), not just persisted verbatim.
+
+Both checks are MINT-side. Verification (:func:`app.security.pat.verify_pat`) is
+untouched, so keys already issued — including the NULL-expiry ones this console used
+to create by default — keep working exactly as before until they are revoked.
 """
 
 import uuid
@@ -20,7 +32,7 @@ import uuid
 from fastapi import APIRouter, status
 
 from app.api.deps import CurrentOrg, DbSession, EntitledUser
-from app.core.errors import NotFoundError
+from app.core.errors import NotFoundError, ValidationAppError
 from app.schemas.common import Page
 from app.schemas.pat import PATCreate, PATCreated, PATRead
 from app.security.pat import create_pat, list_pats, revoke_pat
@@ -39,9 +51,22 @@ async def create_pat_route(
 
     ``scopes`` defaults to the operator's own entitlement SKUs (so the key carries
     the ``security-ops`` entitlement and nothing more) when the body leaves it
-    empty. The key is bound to the caller's org. The route owns the commit.
+    empty, and a supplied list may only narrow that set — never widen it. The key
+    is bound to the caller's org and is always time-boxed (an omitted ``expires_at``
+    becomes ``pat_default_ttl_days``; past or over-long values are refused). The
+    route owns the commit.
     """
     scopes = data.scopes or list(user.apps)
+    # Defense in depth: a narrowing request may only ever be a SUBSET of what the
+    # caller already holds. (The default branch above is already the caller's own
+    # entitlement list — it is the body-supplied branch that was trusted verbatim.)
+    excess = sorted(set(scopes) - set(user.apps))
+    if excess:
+        raise ValidationAppError(
+            "personal access token scopes cannot exceed the caller's entitlements",
+            code="pat_scopes_exceed_caller",
+            detail={"field": "scopes", "not_entitled": excess},
+        )
     minted = await create_pat(
         session,
         user.id,

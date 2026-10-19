@@ -7,13 +7,17 @@ body of ``POST /targets/{id}/attest`` and its fields are unpacked directly into
 ``app.models.target.AuthorizedTarget`` ORM columns 1:1.
 """
 
+import logging
 import uuid
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.core.time import BUSINESS_TIMEZONE, normalize_datetime_to_utc
 from app.models.target import AttestationMethod, AttestationStatus, TargetKind
+
+_time_logger = logging.getLogger("secops.schemas.time")
 
 
 class TargetCreate(BaseModel):
@@ -43,6 +47,37 @@ class AttestationRequest(BaseModel):
     justification: str | None = None
     evidence: dict[str, Any] | None = None
     expires_at: datetime | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_request_datetime(cls, value: Any) -> Any:
+        """Normalize the client expiry and warn once when it is timezone-less."""
+        if not isinstance(value, dict):
+            return value
+        data = dict(value)
+        warned = False
+
+        def warn_once(value: datetime) -> None:
+            nonlocal warned
+            if not warned:
+                _time_logger.warning(
+                    "naive client datetime %s interpreted as %s business time using "
+                    "fold=0 (first occurrence) and normalized to UTC",
+                    value.isoformat(),
+                    BUSINESS_TIMEZONE,
+                )
+                warned = True
+
+        if "expires_at" in data:
+            data["expires_at"] = normalize_datetime_to_utc(
+                data["expires_at"], on_naive=warn_once
+            )
+        return data
+
+    @field_validator("expires_at", mode="before")
+    @classmethod
+    def _normalize_expiry(cls, value: Any) -> Any:
+        return normalize_datetime_to_utc(value)
 
 
 class TargetRead(BaseModel):
