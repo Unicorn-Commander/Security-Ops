@@ -58,14 +58,22 @@ def test_pat_create_naive_expiry_is_business_time():
 async def test_create_pat_returns_plaintext_once_and_stores_only_hash(db_session):
     org = await make_org(db_session, slug="pilot")
     minted = await create_pat(
-        db_session, "agent-1", "ci-key", ["security-ops"], org_slug=org.slug
+        db_session,
+        "agent-1",
+        "ci-key",
+        ["security-ops"],
+        org_slug=org.slug,
+        allowed_scopes=["security-ops"],
     )
     await db_session.commit()
 
     # Plaintext is the well-known prefix + secret, and never equals the stored value.
     assert minted.plaintext.startswith(TOKEN_PREFIX)
     assert minted.record.token_hash == hash_token(minted.plaintext)
-    assert minted.plaintext not in (minted.record.token_hash, minted.record.token_prefix)
+    assert minted.plaintext not in (
+        minted.record.token_hash,
+        minted.record.token_prefix,
+    )
     # Only a short, non-secret prefix is retained for display.
     assert minted.record.token_prefix.startswith(TOKEN_PREFIX)
     assert len(minted.record.token_prefix) < len(minted.plaintext)
@@ -73,7 +81,14 @@ async def test_create_pat_returns_plaintext_once_and_stores_only_hash(db_session
 
 async def test_verify_pat_accepts_good_token_and_stamps_last_used(db_session):
     org = await make_org(db_session, slug="pilot")
-    minted = await create_pat(db_session, "agent-1", "k", ["security-ops"], org_slug=org.slug)
+    minted = await create_pat(
+        db_session,
+        "agent-1",
+        "k",
+        ["security-ops"],
+        org_slug=org.slug,
+        allowed_scopes=["security-ops"],
+    )
     await db_session.commit()
 
     record = await verify_pat(db_session, minted.plaintext)
@@ -91,14 +106,30 @@ async def test_verify_pat_rejects_unknown_revoked_and_expired(db_session):
     assert await verify_pat(db_session, "eyJ.a.b") is None
 
     # Revoked.
-    revoked = await create_pat(db_session, "agent-1", "r", ["security-ops"], org_slug=org.slug)
+    revoked = await create_pat(
+        db_session,
+        "agent-1",
+        "r",
+        ["security-ops"],
+        org_slug=org.slug,
+        allowed_scopes=["security-ops"],
+    )
     await db_session.commit()
-    await revoke_pat(db_session, revoked.record.id, owner_user_id="agent-1", org_slug=org.slug)
+    await revoke_pat(
+        db_session, revoked.record.id, owner_user_id="agent-1", org_slug=org.slug
+    )
     await db_session.commit()
     assert await verify_pat(db_session, revoked.plaintext) is None
 
     # Expired.
-    expired = await create_pat(db_session, "agent-1", "e", ["security-ops"], org_slug=org.slug)
+    expired = await create_pat(
+        db_session,
+        "agent-1",
+        "e",
+        ["security-ops"],
+        org_slug=org.slug,
+        allowed_scopes=["security-ops"],
+    )
     expired.record.expires_at = utcnow() - timedelta(hours=1)
     await db_session.commit()
     assert await verify_pat(db_session, expired.plaintext) is None
@@ -116,7 +147,29 @@ async def test_create_pat_rejects_past_expiry(db_session):
             ["security-ops"],
             utcnow() - timedelta(days=1),
             org_slug=org.slug,
+            allowed_scopes=["security-ops"],
         )
+
+
+async def test_create_pat_rejects_scopes_beyond_caller_entitlements(db_session):
+    from app.core.errors import ValidationAppError
+
+    org = await make_org(db_session, slug="pilot")
+    with pytest.raises(ValidationAppError) as excinfo:
+        await create_pat(
+            db_session,
+            "agent-1",
+            "greedy",
+            ["security-ops", "accounting-ops"],
+            org_slug=org.slug,
+            allowed_scopes=["security-ops"],
+        )
+
+    assert excinfo.value.code == "pat_scopes_exceed_caller"
+    assert excinfo.value.detail == {
+        "field": "scopes",
+        "not_entitled": ["accounting-ops"],
+    }
 
 
 async def test_mint_route_returns_token_once_and_defaults_scopes(db_session):
@@ -153,7 +206,12 @@ async def test_create_pat_defaults_to_a_bounded_expiry_never_permanent(db_sessio
     org = await make_org(db_session, slug="pilot")
     before = utcnow()
     minted = await create_pat(
-        db_session, "agent-1", "no-expiry-please", ["security-ops"], org_slug=org.slug
+        db_session,
+        "agent-1",
+        "no-expiry-please",
+        ["security-ops"],
+        org_slug=org.slug,
+        allowed_scopes=["security-ops"],
     )
     await db_session.commit()
 
@@ -171,7 +229,13 @@ async def test_create_pat_rejects_expiry_beyond_max_ttl(db_session):
     over = utcnow() + timedelta(days=get_settings().pat_max_ttl_days + 1)
     with pytest.raises(ValidationAppError) as excinfo:
         await create_pat(
-            db_session, "agent-1", "forever", ["security-ops"], over, org_slug=org.slug
+            db_session,
+            "agent-1",
+            "forever",
+            ["security-ops"],
+            over,
+            org_slug=org.slug,
+            allowed_scopes=["security-ops"],
         )
     assert excinfo.value.code == "pat_expiry_too_long"
 
@@ -184,6 +248,7 @@ async def test_create_pat_rejects_expiry_beyond_max_ttl(db_session):
             ["security-ops"],
             utcnow().replace(year=3000),
             org_slug=org.slug,
+            allowed_scopes=["security-ops"],
         )
 
 
@@ -192,7 +257,13 @@ async def test_create_pat_keeps_an_in_bounds_explicit_expiry_verbatim(db_session
     org = await make_org(db_session, slug="pilot")
     wanted = utcnow() + timedelta(days=get_settings().pat_max_ttl_days - 1)
     minted = await create_pat(
-        db_session, "agent-1", "one-year", ["security-ops"], wanted, org_slug=org.slug
+        db_session,
+        "agent-1",
+        "one-year",
+        ["security-ops"],
+        wanted,
+        org_slug=org.slug,
+        allowed_scopes=["security-ops"],
     )
     await db_session.commit()
     assert minted.record.expires_at == wanted
@@ -229,6 +300,10 @@ async def test_mint_route_refuses_scopes_beyond_the_callers_entitlements(db_sess
             user,
         )
     assert excinfo.value.code == "pat_scopes_exceed_caller"
+    assert excinfo.value.detail == {
+        "field": "scopes",
+        "not_entitled": ["accounting-ops"],
+    }
 
     # Narrowing to a subset (here: exactly what the caller holds) still works.
     ok = await create_pat_route(
