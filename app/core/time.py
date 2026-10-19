@@ -30,6 +30,18 @@ def _parse_datetime(value: Any) -> Any:
         return value
 
 
+def _is_nonexistent_business_time(value: datetime) -> bool:
+    """Whether a naïve business wall time falls in a zone transition gap."""
+    return all(
+        value
+        != value.replace(tzinfo=_BUSINESS_ZONE, fold=fold)
+        .astimezone(UTC)
+        .astimezone(_BUSINESS_ZONE)
+        .replace(tzinfo=None)
+        for fold in (0, 1)
+    )
+
+
 def normalize_datetime_to_utc(
     value: Any,
     *,
@@ -39,10 +51,12 @@ def normalize_datetime_to_utc(
 
     API clients historically send timezone-less datetimes. Those values are
     business wall-clock time, so attach the named business zone before converting
-    to UTC. During the 2026-11-01 DST fall-back, the local 01:00–02:00 hour
-    occurs twice; ``fold=0`` is selected explicitly, meaning the first
-    occurrence (EDT). A naïve value is warned about and named in the warning.
-    Invalid values are returned unchanged so Pydantic can report its normal
+    to UTC. A naïve value in the named zone's spring-forward DST gap is rejected
+    because that local time does not exist. During the 2026-11-01 DST fall-back,
+    the local 01:00–02:00 hour occurs twice; ``fold=0`` is selected explicitly,
+    meaning the first occurrence (EDT). A valid naïve value is warned about and
+    named in the warning.
+    Unparseable values are returned unchanged so Pydantic can report its normal
     field-specific validation error.
 
     ``on_naive`` receives the parsed naïve value and lets a request schema emit
@@ -53,6 +67,12 @@ def normalize_datetime_to_utc(
         return value
 
     if parsed.tzinfo is None:
+        if _is_nonexistent_business_time(parsed):
+            raise ValueError(
+                f"local datetime {parsed.isoformat()} falls in the "
+                f"spring-forward DST gap for {BUSINESS_TIMEZONE}; "
+                "this local time does not exist"
+            )
         if on_naive is not None:
             on_naive(parsed)
         else:
