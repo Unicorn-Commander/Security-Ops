@@ -35,6 +35,7 @@ import hashlib
 import logging
 import secrets
 import uuid
+from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -159,6 +160,7 @@ async def create_pat(
     *,
     org_slug: str,
     owner_email: str | None = None,
+    allowed_scopes: Collection[str],
 ) -> MintedPAT:
     """Create a Personal Access Token, returning its plaintext exactly once.
 
@@ -173,7 +175,9 @@ async def create_pat(
 
     ``org_slug`` / ``owner_email`` are keyword-only additions to the documented
     ``create_pat(session, owner_user_id, name, scopes, expires_at=None)`` signature
-    (the tenant binding a durable, browserless credential needs).
+    (the tenant binding a durable, browserless credential needs). ``allowed_scopes``
+    is the minting caller's entitlement ceiling and is required so every caller
+    enforces the same bound.
     """
     clean_name = (name or "").strip()
     if not clean_name:
@@ -181,6 +185,14 @@ async def create_pat(
             "a personal access token requires a name",
             code="pat_name_required",
             detail={"field": "name"},
+        )
+    requested_scopes = list(scopes or [])
+    excess = sorted(set(requested_scopes) - set(allowed_scopes))
+    if excess:
+        raise ValidationAppError(
+            "personal access token scopes cannot exceed the caller's entitlements",
+            code="pat_scopes_exceed_caller",
+            detail={"field": "scopes", "not_entitled": excess},
         )
     # Always time-boxed: refuses a past/over-long expiry, defaults an omitted one.
     expires_at = bounded_expiry(expires_at)
@@ -192,7 +204,7 @@ async def create_pat(
         owner_email=owner_email,
         org_slug=org_slug,
         name=clean_name,
-        scopes=list(scopes or []),
+        scopes=requested_scopes,
         token_prefix=prefix,
         token_hash=hash_token(plaintext),
         expires_at=expires_at,
@@ -210,9 +222,7 @@ async def create_pat(
     return MintedPAT(record=record, plaintext=plaintext)
 
 
-async def verify_pat(
-    session: AsyncSession, token: str
-) -> PersonalAccessToken | None:
+async def verify_pat(session: AsyncSession, token: str) -> PersonalAccessToken | None:
     """Resolve a presented PAT to its row, or ``None`` if it is not usable.
 
     Returns ``None`` (never raises) when the token is not a PAT, is unknown, is
@@ -224,9 +234,7 @@ async def verify_pat(
     digest = hash_token(token)
     record = (
         await session.execute(
-            select(PersonalAccessToken).where(
-                PersonalAccessToken.token_hash == digest
-            )
+            select(PersonalAccessToken).where(PersonalAccessToken.token_hash == digest)
         )
     ).scalar_one_or_none()
     if record is None:

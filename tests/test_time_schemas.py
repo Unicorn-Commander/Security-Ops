@@ -6,6 +6,9 @@ import logging
 from datetime import UTC, datetime, timedelta, timezone
 from types import SimpleNamespace
 
+import pytest
+from pydantic import ValidationError
+
 from app.authz.gate import _load_scope
 from app.core.time import normalize_datetime_to_utc
 from app.models.target import AttestationMethod
@@ -106,6 +109,36 @@ def test_naive_fold_time_uses_first_edt_occurrence_and_logs_value(caplog):
         value in record.getMessage() and "fold=0" in record.getMessage()
         for record in warnings
     )
+
+
+def test_naive_spring_forward_gap_is_rejected_as_request_validation():
+    with pytest.raises(ValidationError) as excinfo:
+        AttestationRequest(
+            method=AttestationMethod.OWNED,
+            expires_at="2026-03-08T02:30:00",
+        )
+
+    message = str(excinfo.value)
+    assert "spring-forward DST gap" in message
+    assert "America/New_York" in message
+    assert "local time does not exist" in message
+
+
+def test_naive_spring_forward_boundary_times_are_accepted():
+    assert normalize_datetime_to_utc("2026-03-08T01:59:00") == datetime(
+        2026, 3, 8, 6, 59, tzinfo=UTC
+    )
+    assert normalize_datetime_to_utc("2026-03-08T03:00:00") == datetime(
+        2026, 3, 8, 7, 0, tzinfo=UTC
+    )
+
+
+def test_aware_datetime_in_spring_forward_wall_gap_keeps_its_offset():
+    aware = datetime(2026, 3, 8, 2, 30, tzinfo=timezone(timedelta(hours=-5)))
+
+    request = AttestationRequest(method=AttestationMethod.OWNED, expires_at=aware)
+
+    assert request.expires_at == aware.astimezone(UTC)
 
 
 def test_aware_attestation_expiry_keeps_the_same_instant():

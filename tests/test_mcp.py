@@ -52,7 +52,12 @@ def _ctx(session, org, user=None) -> McpContext:
 async def test_mcp_scope_accepts_entitled_pat(db_session):
     org = await make_org(db_session, slug="pilot")
     minted = await create_pat(
-        db_session, "agent-1", "k", ["security-ops"], org_slug=org.slug
+        db_session,
+        "agent-1",
+        "k",
+        ["security-ops"],
+        org_slug=org.slug,
+        allowed_scopes=["security-ops"],
     )
     await db_session.commit()
 
@@ -69,7 +74,14 @@ async def test_mcp_scope_accepts_entitled_pat(db_session):
 async def test_mcp_scope_refuses_pat_without_entitlement(db_session):
     org = await make_org(db_session, slug="pilot")
     # Minted with NO entitlement SKUs → the entitlement gate must bite.
-    minted = await create_pat(db_session, "agent-1", "k", [], org_slug=org.slug)
+    minted = await create_pat(
+        db_session,
+        "agent-1",
+        "k",
+        [],
+        org_slug=org.slug,
+        allowed_scopes=[],
+    )
     await db_session.commit()
 
     set_current_token(minted.plaintext)
@@ -102,9 +114,7 @@ async def test_runs_start_tool_refused_without_attested_scope(db_session):
     ctx = _ctx(db_session, org)
 
     with pytest.raises(AuthorizationDenied):
-        await _runs_start_impl(
-            ctx, engagement.id, RunCreate(targets=["example.com"])
-        )
+        await _runs_start_impl(ctx, engagement.id, RunCreate(targets=["example.com"]))
 
     # And nothing was created — the denial creates no run.
     from app.repositories.runs import RunRepository
@@ -155,17 +165,28 @@ async def test_attack_path_tool_derives_graph_and_is_tenant_isolated(db_session)
     other_engagement = await make_engagement(db_session, other)
 
     run = Run(
-        id=uuid.uuid4(), engagement_id=engagement.id, org_id=org.id,
-        mode=RunMode.STANDARD, model_profile="hybrid-local-sweep-verify",
-        targets=["example.com"], status=RunStatus.COMPLETED,
+        id=uuid.uuid4(),
+        engagement_id=engagement.id,
+        org_id=org.id,
+        mode=RunMode.STANDARD,
+        model_profile="hybrid-local-sweep-verify",
+        targets=["example.com"],
+        status=RunStatus.COMPLETED,
     )
     db_session.add(run)
     await db_session.flush()
-    db_session.add(Finding(
-        id=uuid.uuid4(), run_id=run.id, engagement_id=engagement.id, org_id=org.id,
-        title="SQLi", severity=FindingSeverity.CRITICAL, status=FindingStatus.NEW,
-        endpoint="https://app.example.com/login",
-    ))
+    db_session.add(
+        Finding(
+            id=uuid.uuid4(),
+            run_id=run.id,
+            engagement_id=engagement.id,
+            org_id=org.id,
+            title="SQLi",
+            severity=FindingSeverity.CRITICAL,
+            status=FindingStatus.NEW,
+            endpoint="https://app.example.com/login",
+        )
+    )
     await db_session.flush()
 
     ctx = _ctx(db_session, org)
@@ -174,7 +195,9 @@ async def test_attack_path_tool_derives_graph_and_is_tenant_isolated(db_session)
     assert graph["summary"]["finding_count"] == 1
     assert graph["summary"]["host_count"] == 1
     assert graph["summary"]["max_severity"] == "CRITICAL"
-    assert any(n["type"] == "host" and n["label"] == "app.example.com" for n in graph["nodes"])
+    assert any(
+        n["type"] == "host" and n["label"] == "app.example.com" for n in graph["nodes"]
+    )
 
     # Another org's engagement is a 404 for this caller — same gate as the HTTP route.
     with pytest.raises(NotFoundError):

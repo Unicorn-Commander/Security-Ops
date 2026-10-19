@@ -32,7 +32,7 @@ import uuid
 from fastapi import APIRouter, status
 
 from app.api.deps import CurrentOrg, DbSession, EntitledUser
-from app.core.errors import NotFoundError, ValidationAppError
+from app.core.errors import NotFoundError
 from app.schemas.common import Page
 from app.schemas.pat import PATCreate, PATCreated, PATRead
 from app.security.pat import create_pat, list_pats, revoke_pat
@@ -54,19 +54,9 @@ async def create_pat_route(
     empty, and a supplied list may only narrow that set — never widen it. The key
     is bound to the caller's org and is always time-boxed (an omitted ``expires_at``
     becomes ``pat_default_ttl_days``; past or over-long values are refused). The
-    route owns the commit.
+    service enforces the scope ceiling and the route owns the commit.
     """
     scopes = data.scopes or list(user.apps)
-    # Defense in depth: a narrowing request may only ever be a SUBSET of what the
-    # caller already holds. (The default branch above is already the caller's own
-    # entitlement list — it is the body-supplied branch that was trusted verbatim.)
-    excess = sorted(set(scopes) - set(user.apps))
-    if excess:
-        raise ValidationAppError(
-            "personal access token scopes cannot exceed the caller's entitlements",
-            code="pat_scopes_exceed_caller",
-            detail={"field": "scopes", "not_entitled": excess},
-        )
     minted = await create_pat(
         session,
         user.id,
@@ -75,6 +65,7 @@ async def create_pat_route(
         data.expires_at,
         org_slug=org.slug,
         owner_email=user.email,
+        allowed_scopes=user.apps,
     )
     await session.commit()
     read = PATRead.model_validate(minted.record)
@@ -101,9 +92,7 @@ async def revoke_pat_route(
     user: EntitledUser,
 ) -> PATRead:
     """Revoke one of the caller's PATs (idempotent). Cross-owner/org == 404."""
-    record = await revoke_pat(
-        session, pat_id, owner_user_id=user.id, org_slug=org.slug
-    )
+    record = await revoke_pat(session, pat_id, owner_user_id=user.id, org_slug=org.slug)
     if record is None:
         raise NotFoundError("Personal access token not found")
     await session.commit()
