@@ -10,12 +10,17 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from sqlalchemy import String, Text
+from sqlalchemy import JSON, String, Text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, TimestampMixin, UUIDMixin
 
-if TYPE_CHECKING:  # pragma: no cover - typing only, resolved via the mapper registry at runtime
+_JSONB = JSON().with_variant(JSONB(), "postgresql")
+
+if (
+    TYPE_CHECKING
+):  # pragma: no cover - typing only, resolved via the mapper registry at runtime
     from app.models.engagement import Engagement
     from app.models.target import AuthorizedTarget
 
@@ -30,10 +35,19 @@ class Organization(UUIDMixin, TimestampMixin, Base):
 
     __tablename__ = "organizations"
 
-    slug: Mapped[str] = mapped_column(String(255), nullable=False, unique=True, index=True)
+    slug: Mapped[str] = mapped_column(
+        String(255), nullable=False, unique=True, index=True
+    )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     # Optional Keycloak group/workspace claim this org maps to.
     keycloak_group: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Organization-level abuse controls and engine-domain defaults.
+    max_concurrent_runs: Mapped[int | None] = mapped_column(nullable=True)
+    rate_limit_rpm: Mapped[int | None] = mapped_column(nullable=True)
+    max_run_duration_seconds: Mapped[int | None] = mapped_column(nullable=True)
+    engine_domain_restrictions: Mapped[dict | None] = mapped_column(
+        _JSONB, nullable=True
+    )
 
     targets: Mapped[list["AuthorizedTarget"]] = relationship(
         "AuthorizedTarget", back_populates="org"

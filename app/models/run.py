@@ -45,7 +45,9 @@ class RunMode(str, enum.Enum):
 
 
 def _enum(enum_cls: type[enum.Enum], name: str) -> sa.Enum:
-    return sa.Enum(enum_cls, name=name, values_callable=lambda obj: [e.value for e in obj])
+    return sa.Enum(
+        enum_cls, name=name, values_callable=lambda obj: [e.value for e in obj]
+    )
 
 
 class Run(UUIDMixin, TimestampMixin, Base):
@@ -78,13 +80,19 @@ class Run(UUIDMixin, TimestampMixin, Base):
         default=RunStatus.PENDING,
         server_default=RunStatus.PENDING.value,
     )
-    started_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
-    ended_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(
+        sa.DateTime(timezone=True), nullable=True
+    )
+    ended_at: Mapped[datetime | None] = mapped_column(
+        sa.DateTime(timezone=True), nullable=True
+    )
     cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(14, 6), nullable=True)
     usage: Mapped[dict | None] = mapped_column(_JSONB, nullable=True)
     # Filesystem location of the Strix report bundle (./strix_runs/<run>/).
     report_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Optional per-run execution ceiling from the organization/engagement policy.
+    max_execution_time: Mapped[int | None] = mapped_column(sa.Integer(), nullable=True)
 
     engagement: Mapped["Engagement"] = relationship("Engagement", back_populates="runs")
     findings: Mapped[list["Finding"]] = relationship("Finding", back_populates="run")
