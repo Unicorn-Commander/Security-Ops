@@ -70,6 +70,7 @@ import sys
 import time
 
 out = Path(sys.argv[sys.argv.index("--output-directory") + 1])
+assert Path.cwd() == out
 key = os.environ["AWS_ACCESS_KEY_ID"]
 secret = os.environ["AWS_SECRET_ACCESS_KEY"]
 token = os.environ["AWS_SESSION_TOKEN"]
@@ -127,7 +128,8 @@ def assert_runtime_cleared(runner, calls):
     if "invocation" in calls:
         invocation = calls["invocation"]
         assert invocation.env == {}
-        assert not list(invocation.run_dir.glob(".prowler-*"))
+        assert not invocation.run_dir.exists()
+        assert not list(invocation.log_path.parent.glob(".prowler-*"))
         assert not invocation.pid_path.exists()
 
 

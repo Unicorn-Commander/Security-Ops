@@ -228,7 +228,9 @@ class ProwlerRunner(StrixRunner):
         home = self._output_dir / "home"
         home.mkdir(mode=0o700)
         return StrixInvocation(
-            run_dir=run_dir,
+            # Relative tool artifacts belong to the same private directory as
+            # JSON output. Only the scope note, pid and empty log stay durable.
+            run_dir=self._output_dir,
             instruction_path=scope_note,
             model="prowler",
             verify_model=verify_model,
