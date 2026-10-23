@@ -12,6 +12,8 @@ import pytest
 from sqlalchemy import select
 
 from app.authz.errors import AuthorizationDenied, TargetNotAttested
+from app.authz.cloud_proof import _default_assume_role
+from app.authz.proof import ProofUnavailable
 from app.engine.credential_minter import CredentialMintError, mint_prowler_credentials
 from app.models.audit import AuditAction, AuditEvent
 from app.models.engagement import EngagementStatus
@@ -247,3 +249,39 @@ async def test_sts_exception_does_not_expose_credentials(db_session, caplog):
     rendered = "".join(traceback.format_exception(error.value)) + caplog.text
     for value in FAKE_CREDENTIALS.values():
         assert value not in rendered
+
+
+@pytest.mark.parametrize("failure", ["denied", "transport"])
+def test_attestation_sdk_errors_do_not_leak_secrets(monkeypatch, caplog, failure):
+    class FakeClientError(Exception):
+        pass
+
+    class FakeCoreError(Exception):
+        pass
+
+    def fail(**kwargs):
+        error = FakeClientError if failure == "denied" else FakeCoreError
+        raise error(json.dumps(FAKE_CREDENTIALS))
+
+    monkeypatch.setitem(
+        sys.modules,
+        "boto3",
+        SimpleNamespace(client=lambda *a, **kw: SimpleNamespace(assume_role=fail)),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "botocore.exceptions",
+        SimpleNamespace(ClientError=FakeClientError, BotoCoreError=FakeCoreError),
+    )
+    caplog.set_level("INFO")
+    rendered = ""
+    if failure == "denied":
+        assert _default_assume_role(ROLE_ARN, "fake-external-id", "us-east-1") == {}
+    else:
+        with pytest.raises(ProofUnavailable) as error:
+            _default_assume_role(ROLE_ARN, "fake-external-id", "us-east-1")
+        rendered = "".join(traceback.format_exception(error.value)) + str(
+            error.value.detail
+        )
+    for value in FAKE_CREDENTIALS.values():
+        assert value not in rendered + caplog.text

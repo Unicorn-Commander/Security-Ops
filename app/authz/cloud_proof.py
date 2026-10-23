@@ -206,11 +206,10 @@ def _default_assume_role(role_arn: str, external_id: str, region: str | None) ->
     try:  # pragma: no cover - exercised only in a live AWS deploy
         import boto3  # type: ignore
         from botocore.exceptions import BotoCoreError, ClientError  # type: ignore
-    except Exception as exc:  # pragma: no cover
+    except Exception:  # pragma: no cover
         raise ProofUnavailable(
             "cloud role verification requires the 'boto3' package",
-            detail={"error": str(exc)},
-        ) from exc
+        ) from None
     try:  # pragma: no cover - network path, live only
         sts = boto3.client("sts", region_name=region or None)
         resp = sts.assume_role(
@@ -223,11 +222,11 @@ def _default_assume_role(role_arn: str, external_id: str, region: str | None) ->
         arn = assumed.get("Arn", "")
         account = arn.split(":")[4] if arn.count(":") >= 4 else ""
         return {"arn": arn, "account": account, "user_id": assumed.get("AssumedRoleId")}
-    except ClientError as exc:  # pragma: no cover - AccessDenied / bad external id
-        log.info("cloud_proof.assume_role denied role=%s: %s", role_arn, exc)
+    except ClientError:  # AccessDenied / bad external id
+        log.info("cloud_proof.assume_role denied role=%s", role_arn)
         return {}
-    except BotoCoreError as exc:  # pragma: no cover - transport/config
-        raise ProofUnavailable("cloud role verification transport error", detail={"error": str(exc)}) from exc
+    except BotoCoreError:  # transport/config; SDK errors may contain credentials
+        raise ProofUnavailable("cloud role verification transport error") from None
 
 
 def _arn_account(role_arn: str) -> str:
