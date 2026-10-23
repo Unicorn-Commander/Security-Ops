@@ -186,8 +186,8 @@ RUN apt-get update \
 # a heavy Python package with its own strict boto3/pydantic pins, so it is installed
 # in an ISOLATED venv (NOT the app's site-packages) and exposed on PATH via a symlink
 # — this keeps its dependency closure from ever clashing with `python -m app.runner`.
-# Runtime cloud credentials (re-assuming the CLOUD_ROLE-attested role) are injected by
-# the deploy, exactly like Strix's sandbox image and the model-gateway key.
+# Runtime AWS credentials are minted by the runner from the CLOUD_ROLE-attested role
+# and injected only into the isolated Prowler subprocess; GCP/Azure fail closed.
 RUN python -m venv /opt/prowler \
     && /opt/prowler/bin/pip install --no-cache-dir "prowler>=5,<6" \
     && ln -sf /opt/prowler/bin/prowler /usr/local/bin/prowler \

@@ -11,6 +11,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from app.engine.prowler_runner import (
     ProwlerRunner,
     _provider_account,
@@ -25,10 +27,22 @@ def _fail_finding():
     return {
         "status_code": "FAIL",
         "severity": "High",
-        "finding_info": {"title": "S3 bucket allows public read", "desc": "Bucket ACL grants READ to AllUsers"},
+        "finding_info": {
+            "title": "S3 bucket allows public read",
+            "desc": "Bucket ACL grants READ to AllUsers",
+        },
         "metadata": {"event_code": "s3_bucket_public_access"},
-        "resources": [{"uid": "arn:aws:s3:::my-bucket", "name": "my-bucket", "type": "AwsS3Bucket"}],
-        "remediation": {"desc": "Remove the public grant", "references": ["https://docs.aws.amazon.com/s3"]},
+        "resources": [
+            {
+                "uid": "arn:aws:s3:::my-bucket",
+                "name": "my-bucket",
+                "type": "AwsS3Bucket",
+            }
+        ],
+        "remediation": {
+            "desc": "Remove the public grant",
+            "references": ["https://docs.aws.amazon.com/s3"],
+        },
         "cloud": {"account": {"uid": "123456789012"}, "region": "us-east-1"},
     }
 
@@ -58,7 +72,9 @@ def test_pass_finding_is_not_a_vulnerability():
 
 
 def test_severity_from_id_when_string_absent():
-    v = _vuln_from_ocsf({"status_code": "FAIL", "severity_id": 5, "finding_info": {"title": "x"}})
+    v = _vuln_from_ocsf(
+        {"status_code": "FAIL", "severity_id": 5, "finding_info": {"title": "x"}}
+    )
     assert v.severity == FindingSeverity.CRITICAL
 
 
@@ -68,7 +84,9 @@ def test_unknown_severity_defaults_medium():
 
 
 def test_parse_prowler_dir_reads_ocsf(tmp_path: Path):
-    (tmp_path / "prowler.ocsf.json").write_text(json.dumps([_fail_finding(), _pass_finding()]), encoding="utf-8")
+    (tmp_path / "prowler.ocsf.json").write_text(
+        json.dumps([_fail_finding(), _pass_finding()]), encoding="utf-8"
+    )
     findings = parse_prowler_dir(tmp_path)
     assert len(findings) == 1  # only the FAIL
     assert findings[0].title == "S3 bucket allows public read"
@@ -82,12 +100,27 @@ def test_provider_account_split():
     assert _provider_account("aws:123456789012") == ("aws", "123456789012")
     assert _provider_account("gcp:my-project") == ("gcp", "my-project")
     assert _provider_account("azure:sub-guid") == ("azure", "sub-guid")
-    # bare/mis-shaped value falls back to an AWS scan rather than crashing the seam
-    assert _provider_account("bare-value")[0] == "aws"
+    with pytest.raises(ValueError):
+        _provider_account("bare-value")
 
 
 def test_engine_completed_accepts_findings_exit_code():
     r = ProwlerRunner(session=None)  # type: ignore[arg-type]
-    assert r._engine_completed(StrixRunResult(returncode=0, findings=[], metadata={}, report_path=None)) is True
-    assert r._engine_completed(StrixRunResult(returncode=3, findings=[], metadata={}, report_path=None)) is True
-    assert r._engine_completed(StrixRunResult(returncode=1, findings=[], metadata={}, report_path=None)) is False
+    assert (
+        r._engine_completed(
+            StrixRunResult(returncode=0, findings=[], metadata={}, report_path=None)
+        )
+        is True
+    )
+    assert (
+        r._engine_completed(
+            StrixRunResult(returncode=3, findings=[], metadata={}, report_path=None)
+        )
+        is True
+    )
+    assert (
+        r._engine_completed(
+            StrixRunResult(returncode=1, findings=[], metadata={}, report_path=None)
+        )
+        is False
+    )
