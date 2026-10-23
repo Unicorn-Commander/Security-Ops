@@ -186,10 +186,11 @@ class StrixInvocation:
     model: str
     verify_model: str
     profile_name: str
-    env: dict[str, str]
+    env: dict[str, str] = field(repr=False)
     command: list[str]
     log_path: Path
     pid_path: Path
+    capture_output: bool = True
 
 
 def build_strix_env(
@@ -890,7 +891,7 @@ class StrixRunner:
                     *invocation.command,
                     cwd=str(invocation.run_dir),
                     env=invocation.env,
-                    stdout=log_file,
+                    stdout=log_file if invocation.capture_output else asyncio.subprocess.DEVNULL,
                     stderr=asyncio.subprocess.STDOUT,
                 )
             except FileNotFoundError:

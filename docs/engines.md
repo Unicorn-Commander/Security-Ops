@@ -176,19 +176,31 @@ carry mandatory attribution.
 ### prowler — cloud posture (CSPM)
 
 - **Purpose / class:** hundreds of misconfiguration checks across a cloud account. CSPM.
-- **Targets:** `CLOUD_ACCOUNT` (`aws:<id>` / `gcp:<project>` / `azure:<subscription>`),
-  authorized by the **CLOUD_ROLE** possession proof (assume a scoped role with our
-  per-target external ID — `app/authz/cloud_proof.py`), the one genuinely-new gate
-  primitive. Single provider per run — the first target sets it (`prowler_runner.py:96`).
-- **Invocation** (`prowler_runner.py:82`):
-  `prowler <aws|gcp|azure> --output-formats json-ocsf --output-directory <run> --output-filename prowler --status FAIL --no-banner [--verbose if DEEP]`.
-  `--status FAIL` means only failing checks become findings; PASS = compliant. Runtime
-  cloud creds are a deploy concern (re-assumed role), like Strix's sandbox image.
-- **Parser:** inline `parse_prowler_dir` / `_vuln_from_ocsf` (`prowler_runner.py:166`)
+- **Targets:** one `CLOUD_ACCOUNT` (`aws:<id>`) per run, authorized by the
+  **CLOUD_ROLE** possession proof (assume a scoped role with our per-target external
+  ID — `app/authz/cloud_proof.py`). Registered GCP/Azure targets cannot execute yet.
+- **Invocation** (`app/engine/prowler_runner.py`):
+  `prowler aws --output-formats json-ocsf --output-directory <private-temporary-dir> --output-filename prowler --status FAIL --no-banner [--verbose if DEEP]`.
+  `--status FAIL` means only failing checks become findings; PASS = compliant.
+  One AWS account is supported per run. The runner rechecks the ACTIVE engagement,
+  scope and attestation gate, then re-assumes the tenant's CLOUD_ROLE-attested role
+  with the target's external ID and `DurationSeconds=900`. The gate is checked again
+  before spawn. GCP/Azure, malformed targets and multiple accounts fail closed.
+  Only the role grant/proof is stored; temporary credentials stay in memory and the
+  child environment. Host credential providers/config files and application secrets
+  are excluded. Credentials are not refreshed: scans exceeding 15 minutes may fail.
+  Raw stdout/stderr is discarded; lifecycle events and scrubbed findings remain.
+  Raw JSON output is held in a private temporary directory and removed on normal
+  completion, failure, timeout or cancellation. An uncatchable process/host crash can
+  leave that private directory behind; it must not be published as a report artifact.
+  Known session values (including URL-encoded echoes) and named credential fields are
+  scrubbed before findings reach storage or reports. No live AWS acceptance run has
+  been performed for this port; cloud-posture launch claims remain gated on that run.
+- **Parser:** inline `parse_prowler_dir` / `_vuln_from_ocsf`
   over `*.ocsf.json` (OCSF schema); non-FAIL checks return `None` and are dropped.
   `severity_id` (0-6) maps to a severity band; CWE is `None` (cloud checks map to
   compliance controls, not CWE).
-- **Success:** `returncode in (0, 3)` (`prowler_runner.py:157`) — Prowler exits **3**
+- **Success:** `returncode in (0, 3)` — Prowler exits **3**
   when it found failing checks (a successful run with findings), **0** when all pass;
   any other code is a real error (bad creds, etc.).
 - **License:** Apache-2.0.

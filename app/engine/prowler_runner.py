@@ -11,20 +11,21 @@ with our per-target external ID — see ``app/authz/cloud_proof.py``), so a run 
 :class:`ProwlerRunner` subclasses :class:`~app.engine.strix_runner.StrixRunner` to reuse
 the entire gate-cleared execute pipeline (emergency-stop re-check → RUNNING → spawn+wait
 with cross-container E-stop → store findings → verify pass → terminal status). It
-overrides ONLY the three engine seams:
+overrides the execution/preparation boundary as well as the result seams:
 
 * :meth:`prepare` — build the ``prowler <provider>`` command + run dir (no LLM env).
+* :meth:`execute` / :meth:`_spawn_and_wait` — gate, mint, isolate and clean credentials.
 * :meth:`_build_result` — parse Prowler's OCSF JSON into normalized findings (FAILs only;
   PASS/MANUAL checks are compliant/non-findings).
 * :meth:`_engine_completed` — Prowler exits ``0`` when all checks pass and ``3`` when it
   found failing checks (both are a successful *run*); any other code is an error.
 
-Runtime cloud credentials are a DEPLOY concern, exactly like Strix's sandbox image and
-the model gateway key: the ``secops-runner`` re-assumes the attested role (the role ARN +
-our external ID are recorded on the target's ``attestation_evidence`` by the CLOUD_ROLE
-proof) and exposes creds to the subprocess. The GATE — not the runner — is the
-authorization boundary; by the time :meth:`prepare` runs, every target has already
-cleared ``enforce_scope`` (attested CLOUD_ROLE + in-scope + ACTIVE engagement).
+Runtime AWS credentials are minted after rechecking the engagement/attestation gate,
+and are passed only to this run's Prowler subprocess. Each invocation scans exactly
+one AWS account. GCP/Azure fail closed until their runtime credentials are implemented.
+Raw tool output is private and temporary; only scrubbed findings reach storage and
+reports. Tool stdout/stderr is discarded because it can echo credentials; the shared
+runner still records lifecycle events. Temporary credentials are never refreshed.
 """
 
 from __future__ import annotations
@@ -33,7 +34,23 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from tempfile import TemporaryDirectory
+from typing import TYPE_CHECKING, Any, Iterable
+
+from app.authz.cloud_proof import parse_cloud_value
+from app.authz.errors import AuthorizationDenied
+from app.authz.gate import enforce_scope
+from app.core.errors import ConflictError
+from app.engine.cloud_credentials import (
+    credential_values,
+    isolated_prowler_env,
+    scrub_cloud_output,
+)
+from app.engine.credential_minter import (
+    CredentialMintError,
+    _find_cloud_target,
+    mint_prowler_credentials,
+)
 
 from app.engine.strix_runner import (
     ParsedVulnerability,
@@ -45,10 +62,12 @@ from app.engine.strix_runner import (
     map_severity,
     resolve_model_profile,
 )
-from app.models.run import RunMode
+from app.models.audit import AuditAction
+from app.models.engagement import Engagement
+from app.models.run import RunMode, RunStatus
 
 if TYPE_CHECKING:  # pragma: no cover
-    from app.models.engagement import Engagement
+    from app.auth.sso import AuthUser
     from app.models.run import Run
 
 log = logging.getLogger("secops.engine.prowler")
@@ -59,25 +78,101 @@ PROWLER_BIN = "prowler"
 # findings, analogous to Strix's non-zero-on-vulns convention (hence the seam).
 _PROWLER_FINDINGS_EXIT = 3
 
-# Map a CLOUD_ACCOUNT value's provider to the Prowler provider subcommand.
-_PROVIDER_SUBCOMMAND = {"aws": "aws", "gcp": "gcp", "azure": "azure"}
-
 
 def _provider_account(target: str) -> tuple[str, str]:
-    """Split ``<provider>:<account>`` → ``(provider, account)`` (provider lower-cased);
-    defaults to ``("aws", <target>)`` for a bare value so a mis-shaped target still runs
-    an AWS scan rather than crashing the seam."""
-    raw = str(target or "").strip()
-    if ":" in raw:
-        provider, _, account = raw.partition(":")
-        provider = provider.strip().lower()
-        if provider in _PROVIDER_SUBCOMMAND:
-            return provider, account.strip()
-    return "aws", raw
+    """Reject malformed values rather than falling back to the host AWS identity."""
+    return parse_cloud_value(target)
 
 
 class ProwlerRunner(StrixRunner):
     """Prowler engine — cloud-account posture (CSPM) behind the authorization gate."""
+
+    async def execute(
+        self,
+        *,
+        run: Run,
+        engagement: Engagement,
+        actor: AuthUser | str = "system:prowler-runner",
+        timeout: float | None = None,
+        scope_mode: str | None = None,
+        diff_base: str | None = None,
+    ) -> Run:
+        if getattr(self, "_active_run_id", None) is not None:
+            raise ConflictError("Prowler runner already has an active invocation")
+        if run.status != RunStatus.PENDING:
+            raise ConflictError("Prowler run is not PENDING")
+        if run.engagement_id != engagement.id or run.org_id != engagement.org_id:
+            raise CredentialMintError("run and engagement organization do not match")
+
+        self._active_run_id = run.id
+        self._run_context = (run.org_id, run.engagement_id, tuple(run.targets or []))
+        self._credential_env = {}
+        self._output_dir = None
+        try:
+            targets = list(run.targets or [])
+            if len(targets) != 1:
+                raise CredentialMintError(
+                    "Prowler requires exactly one cloud account per run"
+                )
+            self._credential_env = await mint_prowler_credentials(
+                self.session,
+                org_id=run.org_id,
+                engagement_id=engagement.id,
+                target_value=targets[0],
+                actor=actor,
+                run_id=run.id,
+            )
+            # Re-read queued state after the STS wait, before changing run status.
+            await self.session.refresh(run)
+            await self.session.refresh(engagement)
+            if self._run_context != (
+                run.org_id,
+                run.engagement_id,
+                tuple(run.targets or []),
+            ):
+                raise CredentialMintError(
+                    "cloud run context changed while minting credentials"
+                )
+            run_dir = Path(self.settings.runs_dir) / str(run.id)
+            run_dir.mkdir(parents=True, exist_ok=True)
+            with TemporaryDirectory(prefix=".prowler-", dir=run_dir) as raw_dir:
+                self._output_dir = Path(raw_dir)
+                return await super().execute(
+                    run=run,
+                    engagement=engagement,
+                    actor=actor,
+                    timeout=timeout,
+                    scope_mode=scope_mode,
+                    diff_base=diff_base,
+                )
+        except AuthorizationDenied as exc:
+            return await self._terminal(
+                run,
+                engagement,
+                actor,
+                status=RunStatus.DENIED,
+                audit=AuditAction.RUN_COMPLETED,
+                decision="denied",
+                reason=exc.code,
+                error=f"cloud authorization denied: {exc.code}",
+            )
+        except CredentialMintError as exc:
+            # CredentialMintError contains only our fixed, credential-free messages.
+            return await self._terminal(
+                run,
+                engagement,
+                actor,
+                status=RunStatus.FAILED,
+                audit=AuditAction.RUN_COMPLETED,
+                decision="failed",
+                reason="cloud_credentials_unavailable",
+                error=str(exc),
+            )
+        finally:
+            self._credential_env.clear()
+            self._active_run_id = None
+            self._run_context = None
+            self._output_dir = None
 
     def prepare(
         self,
@@ -87,14 +182,20 @@ class ProwlerRunner(StrixRunner):
         scope_mode: str | None = None,
         diff_base: str | None = None,
     ) -> StrixInvocation:
+        if (
+            getattr(self, "_active_run_id", None) != run.id
+            or not getattr(self, "_credential_env", None)
+            or self._output_dir is None
+        ):
+            raise CredentialMintError(
+                "Prowler preparation requires this run's credentials"
+            )
         run_dir = Path(self.settings.runs_dir) / str(run.id)
         run_dir.mkdir(parents=True, exist_ok=True)
 
-        # Prowler is single-provider per invocation; the first gate-cleared target sets
-        # the provider (a run is a homogeneous set of cloud accounts of one provider).
         targets = list(run.targets or [])
-        provider, _account = _provider_account(targets[0]) if targets else ("aws", "")
-        subcommand = _PROVIDER_SUBCOMMAND.get(provider, "aws")
+        if len(targets) != 1 or _provider_account(targets[0])[0] != "aws":
+            raise CredentialMintError("Prowler requires exactly one AWS account")
 
         scope_note = run_dir / "scope.txt"
         try:
@@ -108,11 +209,11 @@ class ProwlerRunner(StrixRunner):
 
         cmd: list[str] = [
             PROWLER_BIN,
-            subcommand,
+            "aws",
             "--output-formats",
             "json-ocsf",
             "--output-directory",
-            str(run_dir),
+            str(self._output_dir),
             "--output-filename",
             "prowler",
             "--status",
@@ -124,17 +225,71 @@ class ProwlerRunner(StrixRunner):
             cmd += ["--verbose"]
 
         verify_model = resolve_model_profile(getattr(run, "model_profile", None)).verify
+        home = self._output_dir / "home"
+        home.mkdir(mode=0o700)
         return StrixInvocation(
-            run_dir=run_dir,
+            # Relative tool artifacts belong to the same private directory as
+            # JSON output. Only the scope note, pid and empty log stay durable.
+            run_dir=self._output_dir,
             instruction_path=scope_note,
             model="prowler",
             verify_model=verify_model,
             profile_name="prowler",
-            env=dict(os.environ),
+            env=isolated_prowler_env(
+                self._credential_env, home=home, ambient=os.environ
+            ),
             command=cmd,
             log_path=run_dir / "prowler.stdout.log",
             pid_path=run_dir / "prowler.pid",
+            capture_output=False,
         )
+
+    async def _spawn_and_wait(
+        self, invocation: StrixInvocation, *, run: Run, timeout: float | None
+    ) -> StrixRunResult:
+        try:
+            await self.session.refresh(run)
+            if self._run_context != (
+                run.org_id,
+                run.engagement_id,
+                tuple(run.targets or []),
+            ):
+                raise CredentialMintError("cloud run context changed before launch")
+            if run.status != RunStatus.RUNNING:
+                return StrixRunResult(
+                    returncode=None,
+                    findings=[],
+                    metadata={},
+                    report_path=None,
+                    stopped=True,
+                    error="cloud run stopped before launch",
+                )
+            engagement = await self.session.get(
+                Engagement, run.engagement_id, populate_existing=True
+            )
+            if engagement is None or engagement.org_id != run.org_id:
+                raise CredentialMintError(
+                    "engagement does not belong to the run organization"
+                )
+            # Recheck after minting/committing: queue delay or STS latency must not
+            # turn a revoked/paused target into an authorized subprocess launch.
+            await enforce_scope(
+                self.session,
+                engagement.id,
+                run.targets[0],
+                actor="system:prowler-runner",
+                run_id=run.id,
+            )
+            target_value = "aws:" + _provider_account(run.targets[0])[1]
+            if await _find_cloud_target(self.session, run.org_id, target_value) is None:
+                raise CredentialMintError(
+                    "cloud role attestation changed before launch"
+                )
+            return await super()._spawn_and_wait(invocation, run=run, timeout=timeout)
+        finally:
+            # The invocation must not retain credentials after success, timeout,
+            # cancellation, or a failed recheck.
+            invocation.env.clear()
 
     def _build_result(
         self,
@@ -144,13 +299,18 @@ class ProwlerRunner(StrixRunner):
         error: str | None,
         stopped: bool,
     ) -> StrixRunResult:
-        findings = parse_prowler_dir(invocation.run_dir)
+        secrets = credential_values(invocation.env)
+        findings = parse_prowler_dir(self._output_dir, secrets=secrets)
         return StrixRunResult(
             returncode=returncode,
             findings=findings,
-            metadata={"engine": "prowler", "returncode": returncode, "finding_count": len(findings)},
+            metadata={
+                "engine": "prowler",
+                "returncode": returncode,
+                "finding_count": len(findings),
+            },
             report_path=None,
-            error=error,
+            error=scrub_cloud_output(error, secrets),
             stopped=stopped,
         )
 
@@ -163,7 +323,9 @@ class ProwlerRunner(StrixRunner):
 # ---------------------------------------------------------------------------
 # Prowler OCSF parsing (pure)
 # ---------------------------------------------------------------------------
-def parse_prowler_dir(run_dir: Path | str) -> list[ParsedVulnerability]:
+def parse_prowler_dir(
+    run_dir: Path | str, *, secrets: Iterable[str] = ()
+) -> list[ParsedVulnerability]:
     """Parse the OCSF JSON Prowler wrote under ``run_dir`` into normalized findings.
 
     Prowler names its OCSF file ``<filename>.ocsf.json`` (we pass ``--output-filename
@@ -179,10 +341,10 @@ def parse_prowler_dir(run_dir: Path | str) -> list[ParsedVulnerability]:
     for path in files:
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:  # pragma: no cover - defensive
-            log.warning("prowler.parse: skipping %s: %s", path, exc)
+        except (OSError, UnicodeError, json.JSONDecodeError):  # defensive
+            log.warning("prowler.parse: skipping unreadable JSON output")
             continue
-        for item in _ocsf_items(data):
+        for item in _ocsf_items(scrub_cloud_output(data, secrets)):
             vuln = _vuln_from_ocsf(item)
             if vuln is not None:
                 out.append(vuln)
@@ -214,9 +376,13 @@ def _vuln_from_ocsf(item: dict[str, Any]) -> ParsedVulnerability | None:
     if status and status not in ("FAIL", "FAILED"):
         return None
 
-    finding_info = item.get("finding_info") if isinstance(item.get("finding_info"), dict) else {}
+    finding_info = (
+        item.get("finding_info") if isinstance(item.get("finding_info"), dict) else {}
+    )
     metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
-    remediation = item.get("remediation") if isinstance(item.get("remediation"), dict) else {}
+    remediation = (
+        item.get("remediation") if isinstance(item.get("remediation"), dict) else {}
+    )
     cloud = item.get("cloud") if isinstance(item.get("cloud"), dict) else {}
     resources = item.get("resources") if isinstance(item.get("resources"), list) else []
 
@@ -224,8 +390,14 @@ def _vuln_from_ocsf(item: dict[str, Any]) -> ParsedVulnerability | None:
         _first(item, "title", "message", default="Prowler finding")
     )
     # OCSF severity is a string ("Critical"…) and/or a numeric severity_id.
-    severity = map_severity(_first(item, "severity", default=None) or _severity_from_id(item.get("severity_id")))
-    check_id = _to_str(_first(metadata, "event_code", default=None) or _first(item, "check_id", default=None))
+    severity = map_severity(
+        _first(item, "severity", default=None)
+        or _severity_from_id(item.get("severity_id"))
+    )
+    check_id = _to_str(
+        _first(metadata, "event_code", default=None)
+        or _first(item, "check_id", default=None)
+    )
     endpoint = None
     if resources and isinstance(resources[0], dict):
         endpoint = _to_str(_first(resources[0], "uid", "name", "type", default=None))
@@ -238,13 +410,19 @@ def _vuln_from_ocsf(item: dict[str, Any]) -> ParsedVulnerability | None:
         "engine": "prowler",
         "check_id": check_id,
         "status": status or None,
-        "description": _to_str(_first(item, "status_detail", "risk_details", default=None)
-                               or _first(finding_info, "desc", default=None)),
+        "description": _to_str(
+            _first(item, "status_detail", "risk_details", default=None)
+            or _first(finding_info, "desc", default=None)
+        ),
         "remediation": _to_str(_first(remediation, "desc", "text", default=None)),
-        "references": remediation.get("references") if isinstance(remediation.get("references"), list) else None,
+        "references": remediation.get("references")
+        if isinstance(remediation.get("references"), list)
+        else None,
         "account": account,
         "region": _to_str(_first(cloud, "region", default=None)),
-        "resource_type": _to_str(resources[0].get("type")) if resources and isinstance(resources[0], dict) else None,
+        "resource_type": _to_str(resources[0].get("type"))
+        if resources and isinstance(resources[0], dict)
+        else None,
         "compliance": _first(item, "compliance", "unmapped", default=None),
         "severity_id": item.get("severity_id"),
     }
@@ -262,7 +440,14 @@ def _vuln_from_ocsf(item: dict[str, Any]) -> ParsedVulnerability | None:
 
 def _severity_from_id(severity_id: Any) -> str | None:
     """OCSF ``severity_id`` (0..6) → a severity string map_severity understands."""
-    mapping = {1: "info", 2: "low", 3: "medium", 4: "high", 5: "critical", 6: "critical"}
+    mapping = {
+        1: "info",
+        2: "low",
+        3: "medium",
+        4: "high",
+        5: "critical",
+        6: "critical",
+    }
     try:
         return mapping.get(int(severity_id))
     except (TypeError, ValueError):

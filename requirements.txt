@@ -29,3 +29,6 @@ httpx==0.28.1               # app.auth.sso JWKS fetch; app.engine.brigade_handof
 
 # --- DNS (external-target ownership proof) ----------------------------------
 dnspython==2.7.0            # app.authz.proof DNS-TXT ownership verification (lazy import)
+
+# --- Cloud role attestation + temporary scanner credentials -----------------
+boto3==1.40.76              # app.authz.cloud_proof; app.engine.credential_minter (AWS STS)
