@@ -27,6 +27,6 @@ cd frontend && npm install && npm run build
 - Keep tenant filters on `org_id`. A cross-organization id should 404.
 - Do not log tokens, cloud credentials, or raw secrets from a scanner report.
 - Do not commit `.env` or a real personal access token. The plaintext of a token is shown once and stored as a hash.
-- This repository is licensed under the AGPL-3.0-or-later. See [LICENSE](LICENSE).
+- This repository is licensed under the Apache License 2.0. Contributions are made under the same licence. See [LICENSE](LICENSE).
 
-By submitting a contribution you agree it can be distributed under that license.
+By opening a pull request you confirm you wrote the change or have the right to submit it under that licence.
