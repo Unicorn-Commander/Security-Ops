@@ -4,7 +4,7 @@
 
 Authorized penetration testing for the Unicorn Commander suite. A run is created only after an active engagement, in-scope targets, and current attestations pass the authorization gate.
 
-[![License: AGPL-3.0-or-later](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue)](LICENSE)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 [![Version 0.5.0](https://img.shields.io/badge/version-0.5.0-blue)](app/main.py)
 [![Python 3.12](https://img.shields.io/badge/Python-3.12-3776AB)](Dockerfile)
 [![FastAPI 0.115.6](https://img.shields.io/badge/FastAPI-0.115.6-009688)](requirements.txt)
@@ -418,9 +418,7 @@ Security-Ops is for authorized testing of systems you own or are permitted to te
 
 ## Licence
 
-[GNU Affero General Public License v3.0 or later](LICENSE) (AGPL-3.0-or-later).
-
-You can run, study, and modify this program. If you change it and run it as a network service, the AGPL requires you to offer the corresponding source to users of that service. The scan engines in the runner image stay under their own licenses. See [docs/engines.md](docs/engines.md).
+Security-Ops is licensed under the [Apache License 2.0](LICENSE). You can use, change and redistribute it, including commercially, under its terms. Our names and logos are covered by [TRADEMARKS.md](TRADEMARKS.md). The scan engines in the runner image stay under their own licenses. See [docs/engines.md](docs/engines.md).
 
 <div align="center">
 

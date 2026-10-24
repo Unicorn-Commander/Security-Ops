@@ -2,6 +2,7 @@
   "name": "security-ops-frontend",
   "private": true,
   "version": "0.1.0",
+  "license": "Apache-2.0",
   "type": "module",
   "description": "Security-Ops console — engagements, authorized-target registry + attestation, run/findings view.",
   "scripts": {
