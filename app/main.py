@@ -10,11 +10,11 @@ import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
 from app.core.config import settings
 from app.db.session import close_db, get_engine, init_db
+from app.mcp.http_guard import ApiCorsMiddleware, install_oauth_discovery
 
 APP_TITLE = "Security-Ops API"
 APP_VERSION = "0.5.0"
@@ -78,13 +78,8 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(title=APP_TITLE, version=APP_VERSION, lifespan=lifespan)
 
 if settings.cors_origins:
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=settings.cors_origins,
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+    # MCP and the OAuth discovery documents set their own CORS. See ApiCorsMiddleware.
+    app.add_middleware(ApiCorsMiddleware)
 
 if install_exception_handlers is not None:
     install_exception_handlers(app)
@@ -94,9 +89,10 @@ if api_router is not None:
 else:  # pragma: no cover - api module lands in a sibling slice
     logger.warning("app.api.router not importable yet; serving core routes only")
 
-# Mount the agent-first MCP server at ``/mcp/`` (trailing slash). Every MCP call
-# authenticates (PAT or JWT), enforces the ``security-ops`` entitlement, and scopes
-# to the caller's org under RLS — identical guardrails to the HTTP surface.
+# ``/mcp/`` is canonical. Bare ``/mcp`` is a 308, and the protected-resource
+# documents are unauthenticated. The mount's guard returns 401 before FastMCP
+# can describe tools to an anonymous caller. Tool-level auth stays in place.
+install_oauth_discovery(app)
 if mcp_asgi_app is not None:
     app.mount("/mcp", mcp_asgi_app())
 else:  # pragma: no cover - only when the mcp SDK is absent

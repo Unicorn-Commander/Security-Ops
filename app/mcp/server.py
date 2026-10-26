@@ -41,6 +41,7 @@ from app.authz.proof import proof_instructions
 from app.core.errors import NotFoundError, ValidationAppError
 from app.engine.brigade_handoff import handoff_finding
 from app.mcp.auth import BearerTokenMiddleware, McpContext, mcp_scope
+from app.mcp.http_guard import McpHttpGuard
 from app.models.finding import FindingSeverity, FindingStatus
 from app.models.run import RunStatus
 from app.repositories.engagements import EngagementRepository
@@ -89,11 +90,9 @@ mcp = FastMCP(
     stateless_http=True,
     json_response=True,
     streamable_http_path="/",
-    # The MCP transport's DNS-rebinding Host/Origin check is redundant here: every
-    # call is gated by our own Bearer auth (PAT/JWT) and the server is only reached
-    # through the suite reverse proxy (which terminates the real host). Leaving the
-    # transport check on would reject the legitimate deploy host, so we disable it
-    # and rely on the app's authoritative auth boundary instead.
+    # The MCP transport's DNS-rebinding Host/Origin check is off: it would reject
+    # the deploy host. McpHttpGuard (in front of this app) does the HTTP 401 and
+    # the Origin allow-list. Bearer auth inside each tool stays as defence in depth.
     transport_security=TransportSecuritySettings(
         enable_dns_rebinding_protection=False
     ),
@@ -643,15 +642,16 @@ _asgi_app = None
 
 
 def mcp_asgi_app():
-    """Return the (memoized) ASGI app to mount at ``/mcp`` — the streamable-HTTP
-    app wrapped so each call's Bearer credential is captured for the tools.
+    """Return the (memoized) ASGI app to mount at ``/mcp``.
 
-    Building it also creates ``mcp.session_manager``; ``app.main`` runs that
-    manager's lifespan.
+    Order: :class:`McpHttpGuard` (401, OPTIONS, Origin) then
+    :class:`BearerTokenMiddleware` (capture the bearer for the tools) then the
+    streamable-HTTP app. Building it also creates ``mcp.session_manager``;
+    ``app.main`` runs that manager's lifespan.
     """
     global _asgi_app
     if _asgi_app is None:
-        _asgi_app = BearerTokenMiddleware(mcp.streamable_http_app())
+        _asgi_app = McpHttpGuard(BearerTokenMiddleware(mcp.streamable_http_app()))
     return _asgi_app
 
 

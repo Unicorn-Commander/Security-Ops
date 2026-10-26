@@ -10,4 +10,7 @@ authorization gate, entitlement check, and tenant RLS. Auth for every MCP call
 
 The server is mounted on the main FastAPI app at ``/mcp/`` by
 ``app.main`` (guarded import, like the rest of the optional wiring).
+Anonymous HTTP calls are refused with 401 and a protected-resource challenge
+before FastMCP lists tools. A call that presents a verifiable bearer still
+runs the per-tool scope.
 """

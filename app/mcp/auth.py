@@ -110,6 +110,38 @@ def _extract_bearer(headers: list[tuple[bytes, bytes]]) -> str | None:
     return None
 
 
+async def ensure_http_credential(token: str | None) -> None:
+    """Refuse a missing or unverifiable MCP bearer before the tool runs.
+
+    Same verifier as :func:`resolve_principal` (development bypass, ``secops_pat_``
+    PAT, or Keycloak RS256). Entitlement and organization membership stay in
+    :func:`mcp_scope`, which runs again inside every tool. Raises
+    :class:`McpAuthError` with a fixed message — the presented token is never
+    included. A datastore failure is not an auth decision and propagates so the
+    HTTP guard can answer 503 without echoing the credential.
+    """
+    if _auth_bypass_active() and not token:
+        return
+    if not token:
+        raise McpAuthError("missing bearer token")
+    if is_pat_token(token):
+        agen = get_session()
+        session = await agen.__anext__()
+        try:
+            record = await verify_pat(session, token)
+        finally:
+            await agen.aclose()
+        if record is None:
+            raise McpAuthError("invalid bearer token")
+        return
+    if not keycloak_enabled():
+        raise McpAuthError("invalid bearer token")
+    try:
+        await validate_token(token)
+    except KeycloakValidationError as exc:
+        raise McpAuthError("invalid bearer token") from exc
+
+
 async def resolve_principal(session: AsyncSession, token: str | None) -> AuthUser:
     """Resolve a Bearer ``token`` to an :class:`AuthUser` (PAT or JWT).
 
