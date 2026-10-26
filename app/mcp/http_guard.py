@@ -120,13 +120,15 @@ def www_authenticate(scope: Scope, *, invalid_token: bool) -> str:
     return ", ".join(parts)
 
 
+MCP_OAUTH_SCOPES = ("openid", "profile", "email", "offline_access", "mcp")
+
+
 def protected_resource_document(scope: Scope) -> dict:
     """RFC 9728 document. ``authorization_servers`` is the configured issuer."""
     issuer = (settings.keycloak_issuer or "").strip().rstrip("/")
-    scopes: list[str] = []
-    for scope_name in ("openid", "profile", settings.entitlement_sku):
-        if scope_name and scope_name not in scopes:
-            scopes.append(scope_name)
+    # Exactly the scopes Keycloak's anonymous-DCR policy allows; the realm scope `mcp` carries this
+    # app's audience (+ uc_uid). Anything else here (e.g. a SKU) makes client registration fail.
+    scopes = list(MCP_OAUTH_SCOPES)
     return {
         "resource": canonical_mcp_url(scope),
         "authorization_servers": [issuer] if issuer else [],

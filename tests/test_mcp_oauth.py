@@ -189,7 +189,7 @@ async def test_prm_documents_on_both_paths(api):
         assert body["resource"] == "http://security-ops.example/mcp/"
         assert body["authorization_servers"] == [_ISSUER]
         assert body["bearer_methods_supported"] == ["header"]
-        assert "security-ops" in body["scopes_supported"]
+        assert body["scopes_supported"] == ["openid", "profile", "email", "offline_access", "mcp"]
         options = await api.options(path)
         assert options.status_code == 204, path
         assert options.headers["access-control-allow-origin"] == "*"
