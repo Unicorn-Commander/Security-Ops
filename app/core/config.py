@@ -33,6 +33,12 @@ class Settings(BaseSettings):
     # --- HTTP / CORS -----------------------------------------------------
     # Accepts a JSON array or a comma-separated string in the environment.
     cors_origins: Annotated[list[str], NoDecode] = []
+    # Extra browser Origins allowed to call the MCP path, on top of cors_origins
+    # and the request's own origin. Same JSON-or-comma syntax.
+    mcp_allowed_origins: Annotated[list[str], NoDecode] = []
+    # Optional canonical public origin (scheme://host, no path, no userinfo).
+    # When unset, MCP discovery uses X-Forwarded-Proto + X-Forwarded-Host/Host.
+    public_base_url: str | None = None
 
     # --- Operator auth (SSO + entitlement) -------------------------------
     auth_bypass: bool = False  # only honored when environment == "development"
@@ -40,7 +46,14 @@ class Settings(BaseSettings):
     keycloak_issuer: str
     keycloak_realm: str = "uchub"
     keycloak_client_id: str
+    # Joined with the client id and keycloak_expected_audiences. A token is
+    # accepted when `aud` or `azp` hits that set. See app.auth.sso.
     keycloak_audience: str | None = None
+    keycloak_expected_audiences: Annotated[list[str], NoDecode] = []
+    # When true (default), a token whose aud and azp both miss the accepted set
+    # is rejected. When false, the mismatch is logged and the token is still
+    # accepted (signature, issuer, and expiry are always enforced).
+    keycloak_enforce_audience: bool = True
     keycloak_jwks_ttl: int = 3600
     entitlement_sku: str = "security-ops"
 
@@ -182,9 +195,14 @@ class Settings(BaseSettings):
     # --- Global kill-switch (honored by the authz gate) ------------------
     emergency_stop_all: bool = False
 
-    @field_validator("cors_origins", mode="before")
+    @field_validator(
+        "cors_origins",
+        "mcp_allowed_origins",
+        "keycloak_expected_audiences",
+        mode="before",
+    )
     @classmethod
-    def _parse_cors_origins(cls, value: object) -> object:
+    def _parse_str_list(cls, value: object) -> object:
         if value is None or value == "":
             return []
         if isinstance(value, str):
@@ -195,6 +213,13 @@ class Settings(BaseSettings):
                 except json.JSONDecodeError:
                     pass
             return [item.strip() for item in raw.split(",") if item.strip()]
+        return value
+
+    @field_validator("public_base_url", mode="before")
+    @classmethod
+    def _blank_public_base(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
         return value
 
 

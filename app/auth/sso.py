@@ -104,14 +104,67 @@ async def _signing_key_for(kid: str) -> Any:
     return RSAAlgorithm.from_jwk(json.dumps(jwk))
 
 
+def accepted_keycloak_audiences() -> list[str]:
+    """Audiences the resource server accepts in ``aud`` or ``azp``.
+
+    The set is the app client id, ``SECOPS_KEYCLOAK_AUDIENCE`` when that is set,
+    and every entry of ``SECOPS_KEYCLOAK_EXPECTED_AUDIENCES``. Order is stable
+    and blanks are dropped. This is the list L1's ``mcp`` client scope must place
+    on access tokens (Keycloak puts a dynamic client id in ``azp``, not here).
+    """
+    raw: list[str] = []
+    if settings.keycloak_client_id:
+        raw.append(settings.keycloak_client_id)
+    if settings.keycloak_audience:
+        raw.append(settings.keycloak_audience)
+    raw.extend(settings.keycloak_expected_audiences or [])
+    accepted: list[str] = []
+    for item in raw:
+        if not isinstance(item, str):
+            continue
+        text = item.strip()
+        if text and text not in accepted:
+            accepted.append(text)
+    return accepted
+
+
+def _audience_values(claims: dict) -> list[str]:
+    aud = claims.get("aud")
+    if isinstance(aud, str):
+        return [aud]
+    if isinstance(aud, list):
+        return [item for item in aud if isinstance(item, str)]
+    return []
+
+
+def token_audience_accepted(claims: dict) -> bool:
+    """Whether ``aud`` or ``azp`` hits :func:`accepted_keycloak_audiences`.
+
+    A resource-style audience (an http(s) URL, the RFC 8707 resource indicator)
+    is logged and does not by itself admit the token. Admission still requires
+    the app client id or another configured audience in ``aud`` or ``azp``.
+    """
+    accepted = set(accepted_keycloak_audiences())
+    audiences = _audience_values(claims)
+    for value in audiences:
+        if value.startswith(("https://", "http://")) and value not in accepted:
+            logger.info("keycloak token has a resource-style audience")
+    if any(value in accepted for value in audiences):
+        return True
+    azp = claims.get("azp")
+    return isinstance(azp, str) and azp in accepted
+
+
 async def validate_token(token: str) -> dict:
     """Verify a Bearer JWT and return its claims.
 
     Verifies the RS256 signature against the realm JWKS (cached, with a single
-    forced refresh on unknown ``kid``), the issuer, and the audience (when
-    ``settings.keycloak_audience`` is set). Raises :class:`KeycloakValidationError`
-    on any failure. This is the low-level primitive; request wiring lives in
-    :func:`get_current_user`.
+    forced refresh on unknown ``kid``), the issuer, expiry, and the audience.
+    Audience matches when ``aud`` or ``azp`` is in :func:`accepted_keycloak_audiences`.
+    When ``SECOPS_KEYCLOAK_ENFORCE_AUDIENCE`` is false, an audience miss is logged
+    and the token is still returned (signature, issuer, and expiry still fail
+    closed). Raises :class:`KeycloakValidationError` on any hard failure. This is
+    the low-level primitive; request wiring lives in :func:`get_current_user`.
     """
     if not token or not token.strip():
         raise KeycloakValidationError("empty bearer token")
@@ -132,21 +185,26 @@ async def validate_token(token: str) -> dict:
     except Exception as exc:  # network / JWKS fetch problems
         raise KeycloakValidationError(f"unable to load signing keys: {exc}") from exc
 
-    audience = settings.keycloak_audience
     issuer = settings.keycloak_issuer or None
-    options = {"verify_aud": audience is not None}
     try:
         claims = jwt.decode(
             token,
             signing_key,
             algorithms=["RS256"],
-            audience=audience,
             issuer=issuer,
             leeway=30,  # tolerate minor clock skew
-            options=options,
+            options={"verify_aud": False},
         )
     except jwt.PyJWTError as exc:
         raise KeycloakValidationError(f"token verification failed: {exc}") from exc
+
+    if not token_audience_accepted(claims):
+        if settings.keycloak_enforce_audience:
+            raise KeycloakValidationError("token audience not accepted")
+        logger.warning(
+            "keycloak token audience not accepted "
+            "(log-only; SECOPS_KEYCLOAK_ENFORCE_AUDIENCE=false)"
+        )
     return claims
 
 
@@ -437,6 +495,8 @@ __all__ = [
     "KeycloakValidationError",
     "keycloak_enabled",
     "validate_token",
+    "accepted_keycloak_audiences",
+    "token_audience_accepted",
     "UserRole",
     "map_keycloak_roles",
     "AuthUser",
