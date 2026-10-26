@@ -124,7 +124,22 @@ The MCP server is [FastMCP](https://github.com/modelcontextprotocol/python-sdk) 
 
 Every tool runs the same chain as the core HTTP routes: authenticate, check the configured entitlement (default `security-ops`), resolve the caller's organization, and set the Postgres row-level-security variable. Tools reuse the HTTP services and repositories. They do not open a second path around the gate.
 
-**Auth.** Send `Authorization: Bearer <token>`. The MCP token is either a personal access token (`secops_pat_…`, stored as a SHA-256 hash with a display prefix, shown in full once at mint) or a JWT from the configured Keycloak issuer (the example uses realm `uchub`). Mint a token in the console under Settings, or with `POST /api/v1/pats`. New tokens expire. The default lifetime is 90 days and the ceiling is 365 (`SECOPS_PAT_DEFAULT_TTL_DAYS`, `SECOPS_PAT_MAX_TTL_DAYS`). Revocation is `DELETE /api/v1/pats/{id}` or the tool `pats_revoke`. There is no MCP minting tool, and a PAT cannot authenticate to the HTTP minting endpoint; that endpoint uses Keycloak authentication or the development bypass. PAT scopes and organization are captured at mint time and are not refreshed from Keycloak.
+**Auth.** The canonical MCP URL is `/mcp/` (`/mcp` redirects 308). Send `Authorization: Bearer <token>`, or sign in with your Unicorn Commander account (OAuth). A call with no bearer, or with a bearer the server cannot verify, is HTTP 401 with a `WWW-Authenticate` challenge pointing at `/.well-known/oauth-protected-resource/mcp/`. The token is either a personal access token (`secops_pat_…`, stored as a SHA-256 hash with a display prefix, shown in full once at mint) or a JWT from the configured Keycloak issuer (the example uses realm `uchub`). Mint a token in the console under Settings, or with `POST /api/v1/pats`. New tokens expire. The default lifetime is 90 days and the ceiling is 365 (`SECOPS_PAT_DEFAULT_TTL_DAYS`, `SECOPS_PAT_MAX_TTL_DAYS`). Revocation is `DELETE /api/v1/pats/{id}` or the tool `pats_revoke`. There is no MCP minting tool, and a PAT cannot authenticate to the HTTP minting endpoint; that endpoint uses Keycloak authentication or the development bypass. PAT scopes and organization are captured at mint time and are not refreshed from Keycloak.
+
+OAuth (the client discovers the sign-in from the 401; no header):
+
+```bash
+claude mcp add --transport http security-ops http://localhost:8130/mcp/
+```
+
+Header form (paste a personal access token):
+
+```bash
+claude mcp add --transport http security-ops http://localhost:8130/mcp/ \
+  --header "Authorization: Bearer secops_pat_…"
+```
+
+A Keycloak access token is accepted when `aud` or `azp` is the app client id (`SECOPS_KEYCLOAK_CLIENT_ID`), `SECOPS_KEYCLOAK_AUDIENCE`, or an entry of `SECOPS_KEYCLOAK_EXPECTED_AUDIENCES`. `SECOPS_KEYCLOAK_ENFORCE_AUDIENCE` defaults to true; set it to false to log an audience miss instead of rejecting the token. Signature, issuer, and expiry are always checked. Discovery's `authorization_servers` value is `SECOPS_KEYCLOAK_ISSUER`. Set `SECOPS_PUBLIC_BASE_URL` when the process should advertise a fixed origin; otherwise it uses `X-Forwarded-Proto` and `X-Forwarded-Host`.
 
 With `SECOPS_ENVIRONMENT=development` and `SECOPS_AUTH_BYPASS=true`, a call that sends no token is the local dev principal in organization `pilot`. The bypass is ignored in any other environment.
 
@@ -278,8 +293,12 @@ Application settings are defined in `app/core/config.py` (`pydantic-settings`, p
 | `SECOPS_KEYCLOAK_ENABLED` | Validate Keycloak JWTs when true. |
 | `SECOPS_KEYCLOAK_ISSUER` | Issuer URL of the realm. Required at startup. |
 | `SECOPS_KEYCLOAK_REALM` | Realm name. The suite realm in the example file is `uchub`. |
-| `SECOPS_KEYCLOAK_CLIENT_ID` | OIDC client id for this app. |
-| `SECOPS_KEYCLOAK_AUDIENCE` | Expected audience. Leave unset to skip the audience check. |
+| `SECOPS_KEYCLOAK_CLIENT_ID` | OIDC client id for this app. Always part of the accepted `aud` / `azp` set. |
+| `SECOPS_KEYCLOAK_AUDIENCE` | Optional extra accepted audience. |
+| `SECOPS_KEYCLOAK_EXPECTED_AUDIENCES` | More accepted audiences. JSON array or comma-separated. |
+| `SECOPS_KEYCLOAK_ENFORCE_AUDIENCE` | Reject tokens whose `aud` and `azp` miss the accepted set. Default true. False logs the miss. |
+| `SECOPS_PUBLIC_BASE_URL` | Optional `scheme://host` for OAuth discovery. Unset uses the forwarded host. |
+| `SECOPS_MCP_ALLOWED_ORIGINS` | Extra browser Origins allowed on `/mcp/`, besides `SECOPS_CORS_ORIGINS` and this host. |
 | `SECOPS_KEYCLOAK_JWKS_TTL` | How long to cache signing keys, in seconds. |
 | `SECOPS_ENTITLEMENT_SKU` | Product entitlement. The default SKU is `security-ops` (realm role `app-security-ops`, or an `entitlements` claim). |
 | `SECOPS_INTERNAL_LITELLM_BASE_URL` | Model gateway base URL for Strix and the console assistant. Set this to your gateway. |
