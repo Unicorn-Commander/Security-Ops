@@ -9,6 +9,7 @@ import { api, isDemo, getToken, setToken } from '../../lib/api.js';
 import { useResource, useMutation } from '../../lib/hooks.js';
 import { useTheme } from '../../lib/theme.js';
 import { useOnboardingState } from '../onboarding';
+import ConnectYourAiPanel from '../connect/ConnectYourAi.jsx';
 import {
   PageHead, StatusBadge, EmptyState, SkeletonRows, ErrorBanner, Banner,
   Drawer, CopyButton, useToast, useConfirm, rowActivate,
@@ -468,6 +469,7 @@ export default function Settings() {
       <div className="stack set-stack">
         <AppearanceSection />
         <AccountSection />
+        <ConnectYourAiPanel />
         <PatSection />
         <GuidesSection />
         <DeveloperSection />

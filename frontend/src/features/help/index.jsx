@@ -18,6 +18,7 @@
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Banner, CopyButton } from '../../components/ui.jsx';
+import ConnectYourAiPanel, { MCP_URL } from '../connect/ConnectYourAi.jsx';
 import {
   ShieldIcon, TargetIcon, PlayIcon, BugIcon, LockIcon,
   SparkIcon, ZapIcon, SearchIcon, XIcon, ChevronRightIcon,
@@ -27,7 +28,6 @@ import './help.css';
 
 /* ------------------------------------------------------------------ Constants */
 
-const MCP_URL = 'https://security-ops.magicunicorn.dev/mcp/';
 const PAT_PREFIX = 'secops_pat_';
 
 /* Contextual deep-link map — other parts of the app import this to point at the
@@ -539,20 +539,6 @@ const SECTIONS = [
     icon: SparkIcon,
     keywords: 'agent access mcp model context protocol server personal access token pat secops_pat keycloak jwt bearer authorization header claude code claude.json mcpServers type http assistant in-app ai automation tools list curl mint revoke same gate agent-first',
     Body: () => {
-      const claudeJson = `{
-  "mcpServers": {
-    "security-ops": {
-      "type": "http",
-      "url": "${MCP_URL}",
-      "headers": {
-        "Authorization": "Bearer ${PAT_PREFIX}your_token_here"
-      }
-    }
-  }
-}`;
-      const cliAdd = `claude mcp add --transport http security-ops \\
-  ${MCP_URL} \\
-  --header "Authorization: Bearer ${PAT_PREFIX}your_token_here"`;
       const smoke = `curl -s ${MCP_URL} \\
   -H "Authorization: Bearer ${PAT_PREFIX}your_token_here" \\
   -H "Content-Type: application/json" \\
@@ -582,11 +568,8 @@ const SECTIONS = [
           <p>A uchub <b>Keycloak JWT</b> carrying the <code>security-ops</code> entitlement works as an alternative bearer,
             but JWTs are short-lived — PATs are the durable choice for long-running agents.</p>
 
-          <h3>2 · Add the MCP server to your client</h3>
-          <p>For <b>Claude Code</b>, add the server to your <code>~/.claude.json</code> under <code>mcpServers</code>:</p>
-          <CodeBlock caption="~/.claude.json" text={claudeJson} />
-          <p>Or add it from the CLI:</p>
-          <CodeBlock caption="shell" text={cliAdd} />
+          <h3>2 · Connect an AI client</h3>
+          <ConnectYourAiPanel />
 
           <h3>3 · Verify the connection</h3>
           <p>A quick <code>tools/list</code> round-trip confirms auth and reachability before you wire it into an agent:</p>
