@@ -64,7 +64,12 @@ When `SECOPS_ENRICHMENT_ENABLED` is on (the default), Trivy findings containing 
 ### Receiving findings from Center Deep Research
 
 Security-Ops can receive Center Deep's signed vulnerability-watch deliveries at
-`POST /api/v1/ingest/center-deep`. First, an entitled operator mints a source;
+`POST /api/v1/ingest/center-deep`. The receiver is authenticated by the webhook
+signature, not by SSO, so behind an SSO proxy it needs its own route that skips
+the proxy (bigboy: the `security-ops-ingest` Traefik router in
+`deploy/bigboy/docker-compose.bigboy.yml`, exact path, POST only, with a 4 MiB
+body cap and a rate limit at the edge); otherwise every delivery is redirected
+to the sign-in page. First, an entitled operator mints a source;
 the response contains the `whsec_` secret exactly once:
 
 ```bash
