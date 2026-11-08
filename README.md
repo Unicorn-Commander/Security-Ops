@@ -10,7 +10,7 @@ Authorized penetration testing for the Unicorn Commander suite. A run is created
 [![FastAPI 0.115.6](https://img.shields.io/badge/FastAPI-0.115.6-009688)](requirements.txt)
 [![Postgres 16](https://img.shields.io/badge/Postgres-16-336791)](docker-compose.yml)
 [![Self-hosted](https://img.shields.io/badge/self--hosted-Docker-1f6feb)](docker-compose.yml)
-[![MCP: 25 tools](https://img.shields.io/badge/MCP-25%20tools-6e56cf)](app/mcp/server.py)
+[![MCP: 26 tools](https://img.shields.io/badge/MCP-26%20tools-6e56cf)](app/mcp/server.py)
 
 [Quick start](#quick-start) · [Features](#feature-tour) · [Agents](#built-for-agents) · [Architecture](#architecture) · [Suite](#part-of-unicorn-commander)
 
@@ -60,6 +60,37 @@ An engagement records in-scope rules, exclusions, an optional time window, inten
 Findings are observations recorded by a run: severity from info through critical, a status, and optional endpoint, evidence, and proof fields. Findings are deduplicated by fingerprint within an engagement. The Gitleaks and Trivy secret parsers remove known plaintext-bearing fields from finding evidence and retain a short secret prefix and length; raw scanner reports remain on disk. A person can mark a finding verified, false positive, or remediated. Handing it to Brigade is a separate action, and it is refused for a false positive.
 
 When `SECOPS_ENRICHMENT_ENABLED` is on (the default), Trivy findings containing CVE identifiers are enriched from EPSS and the CISA Known Exploited Vulnerabilities catalog. A feed outage does not fail the scan. An optional second pass (`SECOPS_STRIX_VERIFY_PASS`, off by default) asks the profile's verify model for a verdict and can mark a finding verified; a refutation does not automatically mark it false positive.
+
+### Receiving findings from Center Deep Research
+
+Security-Ops can receive Center Deep's signed vulnerability-watch deliveries at
+`POST /api/v1/ingest/center-deep`. First, an entitled operator mints a source;
+the response contains the `whsec_` secret exactly once:
+
+```bash
+curl -X POST https://security-ops.magicunicorn.dev/api/v1/ingest-sources \
+  -H 'Authorization: Bearer <operator-bearer-token>' \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"Center Deep vulnerability watch"}'
+```
+
+Store that returned value in the Center Deep brief configuration. The brief's
+delivery settings are:
+
+```yaml
+delivery: ["webhook"]
+delivery_target: https://security-ops.magicunicorn.dev/api/v1/ingest/center-deep
+notify_on: always
+webhook_secret: <the minted secret>
+```
+
+The source list and `ingest_sources_list` MCP tool expose metadata only. The
+secret is currently stored in a plain database column because this repository
+has no at-rest encryption helper; the table is organization-scoped and the
+secret authorizes posting findings only into its matched organization. Imported
+deliveries create/update the synthetic Center Deep engagement and completed run
+directly; they are external observations and do not invoke scan or attestation
+gates.
 
 ### Attack path
 
@@ -143,7 +174,7 @@ A Keycloak access token is accepted when `aud` or `azp` is the app client id (`S
 
 With `SECOPS_ENVIRONMENT=development` and `SECOPS_AUTH_BYPASS=true`, a call that sends no token is the local dev principal in organization `pilot`. The bypass is ignored in any other environment.
 
-**25 tools.** The ones you will use first:
+**26 tools.** The ones you will use first:
 
 | Tool | What it does |
 |---|---|
@@ -156,6 +187,7 @@ With `SECOPS_ENVIRONMENT=development` and `SECOPS_AUTH_BYPASS=true`, a call that
 | `runs_stop` | Stop a run. |
 | `findings_list` / `findings_set_status` | Read and triage findings. |
 | `findings_handoff` | Send a new or verified finding to Brigade. |
+| `ingest_sources_list` | List external ingest-source metadata without webhook secrets. |
 | `engagements_attack_path` | The exposure graph for one engagement. |
 | `engagements_report` | The branded Markdown report. |
 
@@ -356,7 +388,7 @@ flowchart TB
 
 - **secops-frontend** — React 18 and Vite 5, served by nginx 1.27. The image build uses Node 20. Routes: overview, engagements, targets, runs, run detail, findings, attack path, help, and settings. `/` is a landing page.
 - **secops-api** — FastAPI 0.115.6 on Python 3.12. Version `0.5.0` (`APP_VERSION` in `app/main.py`). 37 HTTP operations under `/api/v1`, plus `GET /health` and `GET /version`. All business routes check entitlement; core routes also resolve an organization, while the campaign prototype omits that step.
-- **secops-db** — Postgres 16. Migrations live in `migrations/versions` (14 revisions, `0001_initial` through `0014_task1_through_6`). The API entrypoint runs `alembic upgrade head`.
+- **secops-db** — Postgres 16. Migrations live in `migrations/versions` (15 revisions, `0001_initial` through the existing `0014_task1_through_6` plus `0014_ingest_sources`). The API entrypoint runs `alembic upgrade head`.
 - **secops-runner** — Separate image. Polls `run_queue` and shells out to the engines; Docker access must be supplied by the deployment. In queue mode the API enqueues work; in the default inline mode it attempts to launch the engine itself.
 - **Keycloak** — Operator identity. Entitlement slugs come from `app-<sku>` realm roles and from an `entitlements` claim.
 - **Model gateway** — Strix and the assistant. Configured with `SECOPS_INTERNAL_LITELLM_BASE_URL`.
