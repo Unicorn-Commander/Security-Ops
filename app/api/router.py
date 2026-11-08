@@ -32,6 +32,7 @@ from app.api.campaigns import router as campaigns_router
 from app.api.compliance import router as compliance_router
 from app.api.engagements import router as engagements_router
 from app.api.findings import router as findings_router
+from app.api.ingest import router as ingest_router
 from app.api.me import router as me_router
 from app.api.overview import router as overview_router
 from app.api.pats import router as pats_router
@@ -45,6 +46,7 @@ api_router.include_router(attack_path_router)
 api_router.include_router(targets_router)
 api_router.include_router(runs_router)
 api_router.include_router(findings_router)
+api_router.include_router(ingest_router)
 api_router.include_router(campaigns_router)
 api_router.include_router(overview_router)
 api_router.include_router(compliance_router)

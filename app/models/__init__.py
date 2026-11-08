@@ -11,6 +11,7 @@ from app.models.audit import AuditAction, AuditEvent
 from app.models.campaign import Campaign, CampaignPhase, CampaignRun, CampaignRunStatus, CampaignStatus
 from app.models.engagement import Engagement, EngagementStatus
 from app.models.finding import Finding, FindingSeverity, FindingStatus
+from app.models.ingest_source import IngestSource
 from app.models.organization import Organization
 from app.models.remediation import FindingRemediation, ReTestStatus
 from app.models.pat import PersonalAccessToken
@@ -55,6 +56,8 @@ __all__ = [
     "Finding",
     "FindingSeverity",
     "FindingStatus",
+    # external finding ingest
+    "IngestSource",
     # remediation
     "FindingRemediation",
     "ReTestStatus",
