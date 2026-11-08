@@ -46,6 +46,7 @@ from app.models.finding import FindingSeverity, FindingStatus
 from app.models.run import RunStatus
 from app.repositories.engagements import EngagementRepository
 from app.repositories.findings import FindingRepository
+from app.repositories.ingest import IngestSourceRepository
 from app.repositories.overview import OverviewRepository
 from app.repositories.runs import RunRepository
 from app.repositories.targets import TargetRepository
@@ -55,6 +56,7 @@ from app.schemas.engagement import (
     ScopeDecisionRead,
 )
 from app.schemas.finding import FindingRead
+from app.schemas.ingest import IngestSourceRead
 from app.schemas.overview import OverviewRead
 from app.schemas.pat import PATRead
 from app.schemas.run import RunCreate, RunRead
@@ -426,6 +428,15 @@ async def _pats_revoke_impl(ctx: McpContext, pat_id: uuid.UUID) -> dict[str, Any
     return PATRead.model_validate(record).model_dump(mode="json")
 
 
+async def _ingest_sources_list_impl(ctx: McpContext) -> dict[str, Any]:
+    """List external ingest source metadata without exposing webhook secrets."""
+
+    rows = await IngestSourceRepository(ctx.session).list_for_org(ctx.org.id)
+    return {
+        "items": [IngestSourceRead.model_validate(row).model_dump(mode="json") for row in rows]
+    }
+
+
 # ---------------------------------------------------------------------------
 # Registered tools — thin wrappers that acquire the scope and delegate.
 # ---------------------------------------------------------------------------
@@ -633,6 +644,13 @@ async def pats_revoke(pat_id: str) -> dict:
     is a human-only trust act — do it in the console (POST /api/v1/pats)."""
     async with mcp_scope() as ctx:
         return await _pats_revoke_impl(ctx, _as_uuid(pat_id, "pat_id"))
+
+
+@mcp.tool()
+async def ingest_sources_list() -> dict:
+    """List your organization's external ingest sources (metadata only)."""
+    async with mcp_scope() as ctx:
+        return await _ingest_sources_list_impl(ctx)
 
 
 # ---------------------------------------------------------------------------
